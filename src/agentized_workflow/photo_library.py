@@ -84,6 +84,9 @@ class PhotoLibrary:
             row = database.execute("SELECT COUNT(*) AS count FROM pending_items").fetchone()
         return int(row["count"])
 
+    def content_sha256(self, path: Path) -> str:
+        return self._sha256(Path(path))
+
     def workflow_rows(self) -> list[dict[str, str]]:
         with self._connection() as database:
             rows = database.execute(

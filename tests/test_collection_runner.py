@@ -26,3 +26,6 @@ def test_collection_command_targets_only_pending_species_without_a_photo_cap(tmp
     assert command[command.index("--sources") + 1:command.index("--max-per-source")] == [
         "inaturalist", "gbif", "commons"
     ]
+    assert command[command.index("--catalog-root") + 1] == str(catalog)
+    assert command[command.index("--photos-root") + 1] == str(tmp_path / "photos")
+    assert command[command.index("--output-root") + 1].endswith("photos\\.staging\\collector_logs")

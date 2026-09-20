@@ -213,6 +213,13 @@ class AcquisitionLedger:
             database.commit()
         return version_id
 
+    def link_local_asset(self, remote_version_id: int, asset_id: str) -> None:
+        with self._connection() as database:
+            database.execute(
+                "INSERT OR IGNORE INTO remote_version_assets(remote_version_id,asset_id) VALUES (?,?)",
+                (remote_version_id, asset_id),
+            )
+
     def _version_for_identity(self, database: sqlite3.Connection, identity: RemoteIdentity) -> sqlite3.Row | None:
         return database.execute(
             "SELECT rv.* FROM remote_versions AS rv JOIN remote_assets AS ra ON ra.remote_asset_id=rv.remote_asset_id "

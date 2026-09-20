@@ -18,6 +18,7 @@ def build_collection_command(project_root: Path, catalog_root: Path, contact: st
     if not contact.strip():
         raise ValueError("a public contact URL or email is required for collection")
     pending = pending_collection_species(catalog_root)
+    photos_root = Path(catalog_root).parent / "photos"
     command = [
         sys.executable,
         str(Path(project_root) / "tools" / "collect_species_images.py"),
@@ -25,7 +26,11 @@ def build_collection_command(project_root: Path, catalog_root: Path, contact: st
         "--species-csv",
         str(Path(catalog_root) / "collector_species.csv"),
         "--output-root",
-        str(Path(catalog_root) / "collected_raw"),
+        str(Path(photos_root) / ".staging" / "collector_logs"),
+        "--catalog-root",
+        str(Path(catalog_root)),
+        "--photos-root",
+        str(Path(photos_root)),
         "--sources",
         *SOURCES,
         "--max-per-source",
@@ -46,9 +51,7 @@ def collect_pending(project_root: Path, catalog_root: Path, photos_root: Path, c
     completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
         return completed.returncode
-    raw_output = Path(catalog_root) / "collected_raw"
     library = PhotoLibrary(catalog_root, photos_root)
-    library.ingest_batch(raw_output)
     library.write_workflow_metadata()
     mark_collection_complete(catalog_root, pending)
     return 0

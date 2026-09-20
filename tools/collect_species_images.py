@@ -28,6 +28,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 from urllib.parse import urlparse
+from uuid import uuid4
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from agentized_workflow.acquisition_ledger import AcquisitionLedger
+from agentized_workflow.collector_flow import RemoteCandidate, process_remote_candidate
+from agentized_workflow.photo_library import PhotoLibrary
+from agentized_workflow.remote_identity import RemoteAlias, RemoteIdentity, commons_identity, gbif_identity, inaturalist_identity
 
 try:
     import requests
@@ -875,6 +885,52 @@ def process_candidate(
     return status
 
 
+def ledger_identity(candidate: Candidate) -> RemoteIdentity:
+    metadata = candidate.source_metadata
+    if candidate.source == "inaturalist" and metadata.get("photo_id") is not None and metadata.get("observation_id") is not None:
+        return inaturalist_identity(metadata["photo_id"], metadata["observation_id"], candidate.image_url)
+    if candidate.source == "gbif" and metadata.get("dataset_key") and metadata.get("gbif_key") is not None:
+        return gbif_identity(str(metadata["dataset_key"]), metadata["gbif_key"], candidate.image_url)
+    if candidate.source == "commons":
+        match = re.search(r"page:(\d+):sha1:([^:]+)$", candidate.asset_key)
+        original = str(metadata.get("original_image_url") or candidate.image_url)
+        if match and original:
+            return commons_identity(match.group(1), match.group(2), original)
+    return RemoteIdentity(candidate.source, candidate.asset_key, f"legacy:{candidate.record_id}", (RemoteAlias("canonical_url", candidate.image_url),))
+
+
+def process_candidate_with_ledger(
+    client: ApiClient, candidate: Candidate, library: PhotoLibrary, ledger: AcquisitionLedger,
+    policy_fingerprint: str, run_id: str, max_bytes: int, min_dimension: int,
+    allowed_licenses: set[str], allow_any_license: bool,
+) -> str:
+    identity = ledger_identity(candidate)
+    version_id = ledger.register(identity, candidate_metadata(candidate, "discovered"))
+    names = {name.casefold() for name in candidate.accepted_target_names}
+    if candidate.returned_scientific_name.casefold() not in names:
+        ledger.record_decision(version_id, policy_fingerprint=policy_fingerprint, outcome="rejected_taxon")
+        return "rejected_taxon"
+    if candidate.license_key not in allowed_licenses and not allow_any_license:
+        ledger.record_decision(version_id, policy_fingerprint=policy_fingerprint, outcome="rejected_license")
+        return "rejected_license"
+    staged: list[Path] = []
+    def download() -> Path:
+        (library.photos_root / ".staging").mkdir(parents=True, exist_ok=True)
+        temp, _sha, _ext, _width, _height = download_and_validate(
+            client, candidate.image_url, library.photos_root / ".staging", max_bytes, min_dimension
+        )
+        staged.append(temp)
+        return temp
+    try:
+        return process_remote_candidate(
+            RemoteCandidate(identity, candidate.target_chinese_name), ledger, library,
+            policy_fingerprint, run_id, download,
+        ).outcome
+    finally:
+        for path in staged:
+            path.unlink(missing_ok=True)
+
+
 def crawl(args: argparse.Namespace) -> int:
     targets = load_species_csv(args.species_csv)
     if args.include_species:
@@ -901,13 +957,21 @@ def crawl(args: argparse.Namespace) -> int:
         ],
     )
     client = ApiClient(args.delay, args.timeout, args.retries, args.contact)
-    store = StateStore(output_root / "collector_state.sqlite3")
+    ledger_mode = args.photos_root is not None
+    if ledger_mode and args.catalog_root is None:
+        raise ValueError("--photos-root requires --catalog-root")
+    library = PhotoLibrary(args.catalog_root, args.photos_root) if ledger_mode else None
+    ledger = AcquisitionLedger(args.photos_root / "photo_library.sqlite3") if ledger_mode else None
+    store = None if ledger_mode else StateStore(output_root / "collector_state.sqlite3")
+    policy_fingerprint = hashlib.sha256(
+        json.dumps({"licenses": sorted(allowed_licenses), "allow_any": args.allow_any_license}, sort_keys=True).encode()
+    ).hexdigest()
     rejected_log = output_root / "logs" / "rejected.jsonl"
     counters: dict[str, int] = {}
     try:
         for target in targets:
             logging.info("物种：%s (%s)", target.chinese_name, " | ".join(target.scientific_names))
-            usable_total = store.usable_count(target.chinese_name)
+            usable_total = store.usable_count(target.chinese_name) if store is not None else 0
             target_reached = (
                 args.target_total_per_species is not None
                 and usable_total >= args.target_total_per_species
@@ -934,10 +998,15 @@ def crawl(args: argparse.Namespace) -> int:
                     candidates = fetch_commons(client, target, args.max_per_source, rejected_log)
                 try:
                     for candidate in candidates:
-                        outcome = process_candidate(
-                            client, store, candidate, output_root, allowed_licenses,
-                            args.max_image_mb * 1024 * 1024, args.min_dimension,
-                            rejected_log, args.allow_any_license,
+                        outcome = (
+                            process_candidate_with_ledger(
+                                client, candidate, library, ledger, policy_fingerprint, uuid4().hex,
+                                args.max_image_mb * 1024 * 1024, args.min_dimension, allowed_licenses, args.allow_any_license,
+                            ) if ledger_mode else process_candidate(
+                                client, store, candidate, output_root, allowed_licenses,
+                                args.max_image_mb * 1024 * 1024, args.min_dimension,
+                                rejected_log, args.allow_any_license,
+                            )
                         )
                         counters[outcome] = counters.get(outcome, 0) + 1
                         if outcome in {"accepted", "pending_review"}:
@@ -960,7 +1029,8 @@ def crawl(args: argparse.Namespace) -> int:
         logging.info("本次结果：%s", json.dumps(counters, ensure_ascii=False, sort_keys=True))
         return 1 if counters.get("source_failed") else 0
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def export_review(args: argparse.Namespace) -> int:
@@ -1096,6 +1166,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="只采集指定中文名；可重复传入，默认采集 CSV 中全部物种",
     )
     crawl_parser.add_argument("--output-root", type=Path, default=Path("dataset/mangrove_species"))
+    crawl_parser.add_argument("--catalog-root", type=Path, help="账本模式所用可信物种目录")
+    crawl_parser.add_argument("--photos-root", type=Path, help="启用账本优先入库的照片库目录")
     crawl_parser.add_argument(
         "--sources", nargs="+", default=list(DEFAULT_SOURCES),
         choices=DEFAULT_SOURCES,
