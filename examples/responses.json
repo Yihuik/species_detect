@@ -1,0 +1,127 @@
+{
+  "consistent.png": {
+    "visibility": {
+      "route": "whole_or_mostly_visible"
+    },
+    "localizations": [
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              100,
+              100,
+              300,
+              300
+            ]
+          }
+        ]
+      },
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              100,
+              100,
+              300,
+              300
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "retry.png": {
+    "visibility": {
+      "route": "whole_or_mostly_visible"
+    },
+    "localizations": [
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              100,
+              100,
+              300,
+              300
+            ]
+          }
+        ]
+      },
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              600,
+              600,
+              900,
+              900
+            ]
+          }
+        ]
+      },
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              100,
+              100,
+              300,
+              300
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "review.png": {
+    "visibility": {
+      "route": "whole_or_mostly_visible"
+    },
+    "localizations": [
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              100,
+              100,
+              300,
+              300
+            ]
+          }
+        ]
+      },
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              600,
+              600,
+              900,
+              900
+            ]
+          }
+        ]
+      },
+      {
+        "coordinate_system": "qwen_0_999",
+        "boxes": [
+          {
+            "bbox": [
+              350,
+              350,
+              500,
+              500
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

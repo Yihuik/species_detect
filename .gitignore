@@ -1,0 +1,23 @@
+# Generated photo library and user-provided content
+photos/
+input/inbox/
+catalog/collected_raw/
+
+# Generated workflow outputs
+runs/
+verification/
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Python and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.*_test_tmp/
+
+# Collector staging area
+.staging/
+.tmp/
+
+.test_tmp/
+.pytest_baseline_tmp/

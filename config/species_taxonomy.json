@@ -1,0 +1,15 @@
+{
+  "大鳍弹涂鱼": {"scientific_names": ["Periophthalmus magnuspinnatus"]},
+  "弹涂鱼": {"scientific_names": ["Periophthalmus modestus"]},
+  "弧边管招潮蟹": {"scientific_names": ["Tubuca arcuata"]},
+  "丽彩拟瘦招潮蟹": {"scientific_names": ["Paraleptuca splendida"]},
+  "大陆拟相手蟹": {"scientific_names": ["Parasesarma continentale"]},
+  "锯缘青蟹": {"scientific_names": ["Scylla serrata"]},
+  "双齿相手蟹": {"scientific_names": ["Parasesarma bidens"]},
+  "无齿东方相手蟹": {"scientific_names": ["Orisarma dehaani"]},
+  "瘤拟黑螺": {"scientific_names": ["Melanoides tuberculata"]},
+  "短指和尚蟹": {"scientific_names": ["Mictyris brevidactylus"]},
+  "石磺": {"scientific_names": ["Onchidium verruculatum", "Peronia verruculata"]},
+  "耳螺": {"scientific_names": ["Ellobium chinense", "Ellobium aurismidae"]},
+  "红树蚬": {"scientific_names": ["Geloina erosa", "Geloina expansa"]}
+}
