@@ -8,7 +8,7 @@ import zipfile
 import pytest
 from PIL import Image
 
-from agentized_workflow.photo_library import PhotoLibrary
+from agentized_workflow.photo_library import PhotoLibrary, RemoteProvenance
 from agentized_workflow.species_catalog import (
     mark_collection_complete,
     pending_collection_species,
@@ -195,3 +195,22 @@ def test_workflow_metadata_contains_only_active_unique_photos(tmp_path: Path) ->
 
     assert [row["species"] for row in rows] == ["乙螺", "甲蟹"]
     assert all((tmp_path / "photos" / row["source_image"]).is_file() for row in rows)
+
+
+def test_remote_ingest_returns_duplicate_decision_and_indexes_pending_item(tmp_path: Path) -> None:
+    catalog_root = catalog(tmp_path)
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.jpg"
+    image(first, (20, 40, 60))
+    second.write_bytes(first.read_bytes())
+    library = PhotoLibrary(catalog_root, tmp_path / "photos")
+
+    accepted = library.ingest_remote(first, "甲蟹", RemoteProvenance(remote_version_id=11))
+    duplicate = library.ingest_remote(second, "甲蟹", RemoteProvenance(remote_version_id=12))
+
+    assert accepted.outcome == "accepted"
+    assert accepted.asset_id is not None
+    assert duplicate.outcome == "exact_duplicate"
+    assert duplicate.matched_asset_id == accepted.asset_id
+    assert duplicate.pending_item_id is not None
+    assert library.pending_item_count() == 1

@@ -29,6 +29,19 @@ class IngestReport:
     invalid_images: int = 0
 
 
+@dataclass(frozen=True)
+class RemoteProvenance:
+    remote_version_id: int
+
+
+@dataclass(frozen=True)
+class IngestionDecision:
+    outcome: str
+    asset_id: str | None = None
+    matched_asset_id: str | None = None
+    pending_item_id: str | None = None
+
+
 class PhotoLibrary:
     def __init__(self, catalog_root: Path, photos_root: Path, *, near_distance: int = 4):
         if not 0 <= near_distance <= 64:
@@ -51,6 +64,26 @@ class PhotoLibrary:
                 report = self._merge_report(report, self._ingest_one(path, relative, batch))
         return report
 
+    def ingest_remote(
+        self, image_path: Path, species: str, provenance: RemoteProvenance
+    ) -> IngestionDecision:
+        """Apply the same duplicate rules to a staged remote download as to user input."""
+
+        path = Path(image_path).resolve(strict=True)
+        relative = f"remote:{provenance.remote_version_id}/{path.name}"
+        return self._ingest_image(
+            path,
+            species,
+            relative,
+            batch_id=f"remote:{provenance.remote_version_id}",
+            remote_version_id=provenance.remote_version_id,
+        )
+
+    def pending_item_count(self) -> int:
+        with self._connection() as database:
+            row = database.execute("SELECT COUNT(*) AS count FROM pending_items").fetchone()
+        return int(row["count"])
+
     def workflow_rows(self) -> list[dict[str, str]]:
         with self._connection() as database:
             rows = database.execute(
@@ -69,14 +102,35 @@ class PhotoLibrary:
 
     def _ingest_one(self, image_path: Path, relative: str, batch: Path) -> IngestReport:
         species = Path(relative).parts[0] if Path(relative).parts else ""
+        decision = self._ingest_image(
+            image_path, species, relative, batch_id=self._batch_id(batch), remote_version_id=None
+        )
+        reports = {
+            "accepted": IngestReport(accepted=1),
+            "exact_duplicate": IngestReport(exact_duplicates=1),
+            "near_duplicate": IngestReport(near_duplicates=1),
+            "unknown_species": IngestReport(unknown_species=1),
+            "invalid_image": IngestReport(invalid_images=1),
+        }
+        return reports[decision.outcome]
+
+    def _ingest_image(
+        self,
+        image_path: Path,
+        species: str,
+        relative: str,
+        *,
+        batch_id: str,
+        remote_version_id: int | None,
+    ) -> IngestionDecision:
         if species not in self._active_species():
-            self._pending("unknown_species", image_path, relative, {"species": species})
-            return IngestReport(unknown_species=1)
+            pending = self._pending("unknown_species", image_path, relative, {"species": species})
+            return IngestionDecision("unknown_species", pending_item_id=pending)
         try:
             identity = self._identity(image_path)
         except Exception as error:
-            self._pending("invalid_images", image_path, relative, {"error": type(error).__name__})
-            return IngestReport(invalid_images=1)
+            pending = self._pending("invalid_images", image_path, relative, {"error": type(error).__name__})
+            return IngestionDecision("invalid_image", pending_item_id=pending)
 
         with self._connection() as database:
             exact = database.execute(
@@ -90,19 +144,21 @@ class PhotoLibrary:
             duplicate = exact or pixels
             if duplicate is not None:
                 kind = "cross_species_duplicates" if duplicate["species"] != species else "exact_duplicates"
-                self._pending(kind, image_path, relative, {
+                pending = self._pending(kind, image_path, relative, {
                     "duplicate_of": duplicate["asset_id"], "duplicate_species": duplicate["species"],
                     "sha256": identity["sha256"],
-                })
-                return IngestReport(exact_duplicates=1)
+                }, database=database, remote_version_id=remote_version_id, identity=identity,
+                   matched_asset_id=str(duplicate["asset_id"]))
+                return IngestionDecision("exact_duplicate", matched_asset_id=str(duplicate["asset_id"]), pending_item_id=pending)
 
             near = self._near_match(database, species, identity["dhash"])
             if near is not None:
-                self._pending("near_duplicates", image_path, relative, {
+                pending = self._pending("near_duplicates", image_path, relative, {
                     "candidate_of": near["asset_id"], "distance": near["distance"],
                     "sha256": identity["sha256"],
-                })
-                return IngestReport(near_duplicates=1)
+                }, database=database, remote_version_id=remote_version_id, identity=identity,
+                   matched_asset_id=str(near["asset_id"]))
+                return IngestionDecision("near_duplicate", matched_asset_id=str(near["asset_id"]), pending_item_id=pending)
 
             asset_id = identity["sha256"][:24]
             target = self.photos_root / species / "images" / f"photo_{asset_id}{image_path.suffix.casefold()}"
@@ -113,9 +169,9 @@ class PhotoLibrary:
                 "INSERT INTO assets(asset_id,species,sha256,pixel_sha256,dhash,local_path,source_path,batch_id,status,created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (asset_id, species, identity["sha256"], identity["pixel_sha256"], identity["dhash"],
-                 target.relative_to(self.photos_root).as_posix(), relative, self._batch_id(batch), "active", self._now()),
+                 target.relative_to(self.photos_root).as_posix(), relative, batch_id, "active", self._now()),
             )
-        return IngestReport(accepted=1)
+            return IngestionDecision("accepted", asset_id=asset_id)
 
     def _archive_images(self, batch: Path, temporary: Path) -> list[tuple[Path, str]]:
         images: list[tuple[Path, str]] = []
@@ -176,7 +232,11 @@ class PhotoLibrary:
         distance, asset_id = min(matches)
         return {"asset_id": asset_id, "distance": distance}
 
-    def _pending(self, reason: str, source: Path, relative: str, detail: dict[str, object]) -> None:
+    def _pending(
+        self, reason: str, source: Path, relative: str, detail: dict[str, object], *,
+        database: sqlite3.Connection | None = None, remote_version_id: int | None = None,
+        identity: dict[str, str] | None = None, matched_asset_id: str | None = None,
+    ) -> str:
         directory = self.photos_root / "pending" / reason
         directory.mkdir(parents=True, exist_ok=True)
         identifier = hashlib.sha256((str(source) + str(uuid4())).encode()).hexdigest()[:24]
@@ -187,6 +247,16 @@ class PhotoLibrary:
             json.dumps({"source_image": relative, "reason": reason, **detail}, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        if database is not None:
+            database.execute(
+                "INSERT INTO pending_items(pending_item_id,reason,local_path,sha256,pixel_sha256,dhash,matched_asset_id,remote_version_id,status,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (identifier, reason, copy.relative_to(self.photos_root).as_posix() if copy.exists() else None,
+                 identity.get("sha256") if identity else None,
+                 identity.get("pixel_sha256") if identity else None,
+                 identity.get("dhash") if identity else None, matched_asset_id, remote_version_id, "pending", self._now()),
+            )
+        return identifier
 
     def _create_schema(self) -> None:
         with self._connection() as database:
@@ -199,6 +269,11 @@ class PhotoLibrary:
             database.execute("CREATE INDEX IF NOT EXISTS assets_sha ON assets(sha256)")
             database.execute("CREATE INDEX IF NOT EXISTS assets_pixel_sha ON assets(pixel_sha256)")
             database.execute("CREATE INDEX IF NOT EXISTS assets_species ON assets(species, status)")
+            database.execute(
+                "CREATE TABLE IF NOT EXISTS pending_items("
+                "pending_item_id TEXT PRIMARY KEY,reason TEXT NOT NULL,local_path TEXT,sha256 TEXT,pixel_sha256 TEXT,"
+                "dhash TEXT,matched_asset_id TEXT,remote_version_id INTEGER,status TEXT NOT NULL,created_at TEXT NOT NULL)"
+            )
 
     def _connection(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.photos_root / "photo_library.sqlite3")
