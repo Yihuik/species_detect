@@ -23,3 +23,7 @@ __pycache__/
 .pytest_baseline_tmp/
 
 .pytest_*/
+
+# Regenerated catalog outputs
+catalog/collection_state.json
+catalog/collector_species.csv

@@ -93,3 +93,22 @@ def test_photos_collect_uses_the_catalog_pending_set(tmp_path: Path, monkeypatch
     assert main(["photos", "collect", "--project-root", str(tmp_path), "--contact", "test@example.org"]) == 0
     assert captured["contact"] == "test@example.org"
     assert Path(captured["catalog_root"]) == tmp_path / "catalog"
+
+
+def test_migrate_provenance_command_uses_explicit_legacy_root(tmp_path: Path, monkeypatch, capsys) -> None:
+    write_project_files(tmp_path)
+    captured: dict[str, Path] = {}
+
+    def migrate(legacy_root: Path, photos_root: Path):
+        captured["legacy_root"] = legacy_root
+        captured["photos_root"] = photos_root
+        return type("Report", (), {"__dict__": {"linked_assets": 3}})()
+
+    monkeypatch.setattr("agentized_workflow.cli.migrate_legacy_provenance", migrate)
+
+    assert main([
+        "photos", "migrate-provenance", "--project-root", str(tmp_path),
+        "--legacy-root", str(tmp_path / "legacy"),
+    ]) == 0
+    assert captured == {"legacy_root": tmp_path / "legacy", "photos_root": tmp_path / "photos"}
+    assert '"linked_assets": 3' in capsys.readouterr().out

@@ -7,6 +7,7 @@ import sys
 from typing import Sequence
 
 from .collection_runner import collect_pending
+from .legacy_provenance import migrate_legacy_provenance
 from .metadata import load_tasks
 from .photo_library import IngestReport, PhotoLibrary
 from .planner import JsonPlanner
@@ -29,7 +30,7 @@ def _project_paths(project_root: Path) -> tuple[Path, Path, Path, Path]:
 def _photo_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="同步可信物种目录并维护去重照片库")
     commands = parser.add_subparsers(dest="photo_command", required=True)
-    for command in ("sync", "ingest", "collect"):
+    for command in ("sync", "ingest", "collect", "migrate-provenance"):
         child = commands.add_parser(command)
         child.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     commands.choices["ingest"].add_argument(
@@ -37,6 +38,10 @@ def _photo_parser() -> argparse.ArgumentParser:
     )
     commands.choices["collect"].add_argument(
         "--contact", required=True, help="公开联系邮箱或项目 URL，写入采集器 User-Agent"
+    )
+    commands.choices["migrate-provenance"].add_argument(
+        "--legacy-root", type=Path, required=True,
+        help="只读导入其 collector_state.sqlite3 和图片侧车 JSON 的旧采集目录",
     )
     return parser
 
@@ -50,6 +55,10 @@ def _photo_main(argv: Sequence[str]) -> int:
         return 0
     if args.photo_command == "collect":
         return collect_pending(args.project_root, catalog_root, photos_root, args.contact)
+    if args.photo_command == "migrate-provenance":
+        report = migrate_legacy_provenance(args.legacy_root, photos_root)
+        print(json.dumps(report.__dict__, ensure_ascii=False))
+        return 0
 
     library = PhotoLibrary(catalog_root, photos_root)
     batches = [args.batch.resolve()] if args.batch else _inbox_batches(Path(args.project_root) / "input" / "inbox")

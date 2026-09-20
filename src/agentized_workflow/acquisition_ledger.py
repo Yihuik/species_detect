@@ -12,7 +12,7 @@ from uuid import uuid4
 from .remote_identity import RemoteIdentity
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -179,6 +179,40 @@ class AcquisitionLedger:
                 (remote_version_id, policy_fingerprint, outcome, _iso(now or _utcnow())),
             )
 
+    def import_content(
+        self,
+        identity: RemoteIdentity,
+        *,
+        content_sha256: str,
+        local_asset_id: str | None,
+        metadata: dict[str, object] | None = None,
+    ) -> int:
+        """Register previously downloaded content without creating a download claim."""
+
+        version_id = self.register(identity, metadata)
+        with self._connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            current = database.execute(
+                "SELECT content_sha256 FROM remote_versions WHERE remote_version_id=?", (version_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError(f"unknown remote version: {version_id}")
+            known = current["content_sha256"]
+            if known is not None and known != content_sha256:
+                raise ValueError("remote version has conflicting content hashes")
+            database.execute(
+                "UPDATE remote_versions SET content_sha256=?,download_outcome='imported',last_seen_at=? "
+                "WHERE remote_version_id=?",
+                (content_sha256, _iso(_utcnow()), version_id),
+            )
+            if local_asset_id is not None:
+                database.execute(
+                    "INSERT OR IGNORE INTO remote_version_assets(remote_version_id,asset_id) VALUES (?,?)",
+                    (version_id, local_asset_id),
+                )
+            database.commit()
+        return version_id
+
     def _version_for_identity(self, database: sqlite3.Connection, identity: RemoteIdentity) -> sqlite3.Row | None:
         return database.execute(
             "SELECT rv.* FROM remote_versions AS rv JOIN remote_assets AS ra ON ra.remote_asset_id=rv.remote_asset_id "
@@ -191,10 +225,9 @@ class AcquisitionLedger:
             version = int(database.execute("PRAGMA user_version").fetchone()[0])
             if version > SCHEMA_VERSION:
                 raise ValueError("photo library schema is newer than this program supports")
-            if version == SCHEMA_VERSION:
-                return
-            database.executescript(
-                """
+            if version < 1:
+                database.executescript(
+                    """
                 CREATE TABLE IF NOT EXISTS remote_assets(
                     remote_asset_id INTEGER PRIMARY KEY,
                     source TEXT NOT NULL,
@@ -255,9 +288,21 @@ class AcquisitionLedger:
                     last_error TEXT,
                     UNIQUE(source, species, query_fingerprint)
                 );
-                """
-            )
-            database.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                    """
+                )
+                database.execute("PRAGMA user_version=1")
+                version = 1
+            if version < 2:
+                database.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS remote_version_assets(
+                        remote_version_id INTEGER NOT NULL REFERENCES remote_versions(remote_version_id),
+                        asset_id TEXT NOT NULL,
+                        PRIMARY KEY(remote_version_id, asset_id)
+                    );
+                    """
+                )
+                database.execute("PRAGMA user_version=2")
 
     def _connection(self) -> sqlite3.Connection:
         database = sqlite3.connect(self.database_path)
