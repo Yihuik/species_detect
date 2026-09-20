@@ -21,3 +21,5 @@ __pycache__/
 
 .test_tmp/
 .pytest_baseline_tmp/
+
+.pytest_*/
