@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+from pathlib import Path
+import shutil
+import subprocess
+
+
+def test_start_agent_resolves_its_root_when_project_root_is_omitted(tmp_path: Path) -> None:
+    """The launcher's default root must be resolved after PowerShell binds parameters."""
+    project = Path(__file__).resolve().parents[1]
+    launcher = tmp_path / "start_agent.ps1"
+    shutil.copy2(project / "tools" / "start_agent.ps1", launcher)
+
+    result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(launcher),
+            "-Contact",
+            "test@example.org",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "Missing .env file:" in output
+    assert "Split-Path" not in output

@@ -2,11 +2,14 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Contact,
-    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$ProjectRoot = "",
     [string]$Model = "qwen3-vl-plus"
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $ProjectRoot) {
+    $ProjectRoot = Split-Path -Parent $PSCommandPath
+}
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $envFile = Join-Path $root ".env"
 if (-not (Test-Path -LiteralPath $envFile)) {
