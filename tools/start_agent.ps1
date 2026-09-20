@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 if (-not $ProjectRoot) {
-    $ProjectRoot = Split-Path -Parent $PSCommandPath
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
 }
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $envFile = Join-Path $root ".env"
