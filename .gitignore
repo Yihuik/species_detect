@@ -2,6 +2,7 @@
 photos/
 input/inbox/
 catalog/collected_raw/
+.env
 
 # Generated workflow outputs
 runs/
