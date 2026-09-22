@@ -21,6 +21,13 @@ class LookupDecision:
     remote_version_id: int | None = None
 
 
+@dataclass(frozen=True)
+class QueryScope:
+    cursor: dict[str, object] | None
+    status: str
+    last_error: str | None
+
+
 class AcquisitionLedger:
     """Record remote identities separately from policy decisions and local files."""
 
@@ -164,6 +171,37 @@ class AcquisitionLedger:
             database.execute("DELETE FROM download_claims WHERE remote_version_id=?", (remote_version_id,))
             database.commit()
 
+    def record_download_failure(
+        self,
+        remote_version_id: int,
+        claim_token: str | None,
+        *,
+        outcome: str,
+        now: datetime | None = None,
+    ) -> None:
+        """End a claimed transfer without making its content durable.
+
+        The remote version remains eligible for retry unless a later policy
+        decision rejects it.  Releasing the claim immediately avoids leaving
+        failed candidates behind until their lease expires.
+        """
+
+        if not outcome:
+            raise ValueError("failure outcome is required")
+        with self._connection() as database:
+            database.execute("BEGIN IMMEDIATE")
+            claim = database.execute(
+                "SELECT claim_token FROM download_claims WHERE remote_version_id=?", (remote_version_id,)
+            ).fetchone()
+            if claim is None or claim_token is None or claim["claim_token"] != claim_token:
+                raise ValueError("download claim is missing or owned by another run")
+            database.execute(
+                "UPDATE remote_versions SET download_outcome=?,last_seen_at=? WHERE remote_version_id=?",
+                (outcome, _iso(now or _utcnow()), remote_version_id),
+            )
+            database.execute("DELETE FROM download_claims WHERE remote_version_id=?", (remote_version_id,))
+            database.commit()
+
     def record_decision(
         self,
         remote_version_id: int,
@@ -218,6 +256,78 @@ class AcquisitionLedger:
             database.execute(
                 "INSERT OR IGNORE INTO remote_version_assets(remote_version_id,asset_id) VALUES (?,?)",
                 (remote_version_id, asset_id),
+            )
+
+    def query_scope(self, source: str, species: str, query_fingerprint: str) -> QueryScope | None:
+        with self._connection() as database:
+            row = database.execute(
+                "SELECT cursor_json,status,last_error FROM query_scopes "
+                "WHERE source=? AND species=? AND query_fingerprint=?",
+                (source, species, query_fingerprint),
+            ).fetchone()
+        if row is None:
+            return None
+        cursor_json = row["cursor_json"]
+        cursor = json.loads(cursor_json) if cursor_json else None
+        if cursor is not None and not isinstance(cursor, dict):
+            raise ValueError("query cursor must be a JSON object")
+        return QueryScope(cursor, str(row["status"]), row["last_error"])
+
+    def checkpoint_query(
+        self,
+        source: str,
+        species: str,
+        query_fingerprint: str,
+        cursor: dict[str, object],
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        instant = _iso(now or _utcnow())
+        payload = json.dumps(cursor, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._connection() as database:
+            database.execute(
+                "INSERT INTO query_scopes(source,species,query_fingerprint,cursor_json,status,started_at,exhausted_at,last_error) "
+                "VALUES (?,?,?,?,?,?,NULL,NULL) "
+                "ON CONFLICT(source,species,query_fingerprint) DO UPDATE SET "
+                "cursor_json=excluded.cursor_json,status='active',last_error=NULL",
+                (source, species, query_fingerprint, payload, "active", instant),
+            )
+
+    def fail_query(
+        self,
+        source: str,
+        species: str,
+        query_fingerprint: str,
+        error: str,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        instant = _iso(now or _utcnow())
+        with self._connection() as database:
+            database.execute(
+                "INSERT INTO query_scopes(source,species,query_fingerprint,cursor_json,status,started_at,exhausted_at,last_error) "
+                "VALUES (?,?,?,NULL,?,?,NULL,?) "
+                "ON CONFLICT(source,species,query_fingerprint) DO UPDATE SET "
+                "status='failed',last_error=excluded.last_error",
+                (source, species, query_fingerprint, "failed", instant, error),
+            )
+
+    def complete_query(
+        self,
+        source: str,
+        species: str,
+        query_fingerprint: str,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        instant = _iso(now or _utcnow())
+        with self._connection() as database:
+            database.execute(
+                "INSERT INTO query_scopes(source,species,query_fingerprint,cursor_json,status,started_at,exhausted_at,last_error) "
+                "VALUES (?,?,?,NULL,?,?,?,NULL) "
+                "ON CONFLICT(source,species,query_fingerprint) DO UPDATE SET "
+                "cursor_json=NULL,status='completed',exhausted_at=excluded.exhausted_at,last_error=NULL",
+                (source, species, query_fingerprint, "completed", instant, instant),
             )
 
     def _version_for_identity(self, database: sqlite3.Connection, identity: RemoteIdentity) -> sqlite3.Row | None:

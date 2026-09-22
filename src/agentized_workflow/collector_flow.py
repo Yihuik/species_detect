@@ -54,5 +54,5 @@ def process_remote_candidate(
             ledger.link_local_asset(version_id, ingestion.asset_id)
         return CollectionResult(ingestion.outcome, version_id, ingestion.asset_id)
     except Exception:
-        # The lease intentionally expires and can be recovered by a later run.
+        ledger.record_download_failure(version_id, claim, outcome="download_failed")
         raise

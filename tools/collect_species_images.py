@@ -77,6 +77,10 @@ VERIFIED_GBIF_VALUES = {
 }
 
 
+class CandidateRejected(ValueError):
+    """A downloaded candidate is unsuitable but its source remains healthy."""
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -746,7 +750,7 @@ def download_and_validate(
     validate_remote_url(str(response.url))
     content_length = int(response.headers.get("Content-Length", 0) or 0)
     if content_length > max_bytes:
-        raise ValueError(f"图片超过大小上限：{content_length} > {max_bytes}")
+        raise CandidateRejected(f"图片超过大小上限：{content_length} > {max_bytes}")
     digest = hashlib.sha256()
     total = 0
     with tempfile.NamedTemporaryFile(dir=temp_dir, suffix=".download", delete=False) as handle:
@@ -757,7 +761,7 @@ def download_and_validate(
                     continue
                 total += len(chunk)
                 if total > max_bytes:
-                    raise ValueError(f"图片下载超过大小上限：{total} > {max_bytes}")
+                    raise CandidateRejected(f"图片下载超过大小上限：{total} > {max_bytes}")
                 digest.update(chunk)
                 handle.write(chunk)
         except Exception:
@@ -767,22 +771,25 @@ def download_and_validate(
         with Image.open(temp_path) as image:
             width, height = image.size
             if width * height > 100_000_000:
-                raise ValueError(f"图片像素总量过大：{width}x{height}")
+                raise CandidateRejected(f"图片像素总量过大：{width}x{height}")
             image.load()
             image_format = str(image.format or "").upper()
         if min(width, height) < min_dimension:
-            raise ValueError(f"图片过小：{width}x{height}，短边要求 >= {min_dimension}")
+            raise CandidateRejected(f"图片过小：{width}x{height}，短边要求 >= {min_dimension}")
         extensions = {
             "JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp",
             "TIFF": ".tif", "BMP": ".bmp",
         }
         extension = extensions.get(image_format)
         if extension is None:
-            raise ValueError(f"不支持的图片格式：{image_format or 'unknown'}")
+            raise CandidateRejected(f"不支持的图片格式：{image_format or 'unknown'}")
         return temp_path, digest.hexdigest(), extension, width, height
-    except Exception:
+    except CandidateRejected:
         temp_path.unlink(missing_ok=True)
         raise
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        raise CandidateRejected(f"无法读取图片内容：{type(exc).__name__}") from exc
 
 
 def candidate_metadata(candidate: Candidate, status: str) -> dict[str, Any]:
@@ -926,6 +933,12 @@ def process_candidate_with_ledger(
             RemoteCandidate(identity, candidate.target_chinese_name), ledger, library,
             policy_fingerprint, run_id, download,
         ).outcome
+    except CandidateRejected as exc:
+        ledger.record_decision(
+            version_id, policy_fingerprint=policy_fingerprint, outcome="rejected_content"
+        )
+        logging.warning("候选图片被拒绝 %s: %s", candidate.page_url, exc)
+        return "rejected_content"
     finally:
         for path in staged:
             path.unlink(missing_ok=True)

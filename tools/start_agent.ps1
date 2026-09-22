@@ -35,6 +35,7 @@ if (-not $env:DASHSCOPE_API_KEY) {
 }
 
 $env:PYTHONPATH = Join-Path $root "src"
+$env:PYTHONUTF8 = "1"
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runDir = Join-Path $root "runs/agent-$runStamp"
 
@@ -43,7 +44,7 @@ try {
     python -m agentized_workflow.cli photos sync --project-root $root
     if ($LASTEXITCODE -ne 0) { throw "Catalog sync failed with exit code $LASTEXITCODE" }
 
-    python -m agentized_workflow.cli photos collect --project-root $root --contact $Contact
+    python -m agentized_workflow.cli photos collect --project-root $root --contact $Contact --allow-partial
     if ($LASTEXITCODE -ne 0) { throw "Public-source collection failed with exit code $LASTEXITCODE" }
 
     python -m agentized_workflow.cli `

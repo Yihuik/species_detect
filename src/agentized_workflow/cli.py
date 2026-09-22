@@ -39,6 +39,10 @@ def _photo_parser() -> argparse.ArgumentParser:
     commands.choices["collect"].add_argument(
         "--contact", required=True, help="公开联系邮箱或项目 URL，写入采集器 User-Agent"
     )
+    commands.choices["collect"].add_argument(
+        "--allow-partial", action="store_true",
+        help="来源局部失败时仍刷新照片元数据并继续后续工作流；失败物种保持 pending",
+    )
     commands.choices["migrate-provenance"].add_argument(
         "--legacy-root", type=Path, required=True,
         help="只读导入其 collector_state.sqlite3 和图片侧车 JSON 的旧采集目录",
@@ -54,7 +58,9 @@ def _photo_main(argv: Sequence[str]) -> int:
         print(json.dumps({"catalog": str(catalog_root), "status": "synced"}, ensure_ascii=False))
         return 0
     if args.photo_command == "collect":
-        return collect_pending(args.project_root, catalog_root, photos_root, args.contact)
+        return collect_pending(
+            args.project_root, catalog_root, photos_root, args.contact, allow_partial=args.allow_partial
+        )
     if args.photo_command == "migrate-provenance":
         report = migrate_legacy_provenance(args.legacy_root, photos_root)
         print(json.dumps(report.__dict__, ensure_ascii=False))

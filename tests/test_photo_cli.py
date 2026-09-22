@@ -80,18 +80,20 @@ def test_photos_collect_uses_the_catalog_pending_set(tmp_path: Path, monkeypatch
     write_project_files(tmp_path)
     captured: dict[str, object] = {}
 
-    def collect(project_root, catalog_root, photos_root, contact):
+    def collect(project_root, catalog_root, photos_root, contact, *, allow_partial=False):
         captured.update(
             project_root=project_root,
             catalog_root=catalog_root,
             photos_root=photos_root,
             contact=contact,
+            allow_partial=allow_partial,
         )
         return 0
 
     monkeypatch.setattr("agentized_workflow.cli.collect_pending", collect)
     assert main(["photos", "collect", "--project-root", str(tmp_path), "--contact", "test@example.org"]) == 0
     assert captured["contact"] == "test@example.org"
+    assert captured["allow_partial"] is False
     assert Path(captured["catalog_root"]) == tmp_path / "catalog"
 
 

@@ -69,5 +69,35 @@ def test_expired_download_claim_can_be_recovered(tmp_path):
     assert second != first
 
 
+def test_failed_transfer_releases_its_claim_for_a_later_retry(tmp_path):
+    ledger = AcquisitionLedger(tmp_path / "photo_library.sqlite3")
+    identity = inaturalist_identity(94, 101, "https://static.inaturalist.org/photos/94/original.jpg")
+    version_id = ledger.register(identity)
+    token = ledger.claim_download(version_id, run_id="run-a", now=_now())
+
+    ledger.record_download_failure(version_id, token, outcome="download_failed", now=_now())
+
+    assert ledger.lookup(identity, policy_fingerprint="policy-a", now=_now()).action == "download"
+    assert ledger.claim_download(version_id, run_id="run-b", now=_now()) is not None
+
+
+def test_query_scope_resumes_cursor_and_keeps_it_after_failure(tmp_path):
+    ledger = AcquisitionLedger(tmp_path / "photo_library.sqlite3")
+
+    ledger.checkpoint_query("gbif", "甲蟹", "query-a", {"offset": 300}, now=_now())
+    ledger.fail_query("gbif", "甲蟹", "query-a", "503 upstream", now=_now())
+
+    scope = ledger.query_scope("gbif", "甲蟹", "query-a")
+    assert scope.cursor == {"offset": 300}
+    assert scope.status == "failed"
+    assert scope.last_error == "503 upstream"
+
+    ledger.complete_query("gbif", "甲蟹", "query-a", now=_now())
+
+    completed = ledger.query_scope("gbif", "甲蟹", "query-a")
+    assert completed.cursor is None
+    assert completed.status == "completed"
+
+
 def _now() -> datetime:
     return datetime(2026, 9, 20, tzinfo=timezone.utc)

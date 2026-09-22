@@ -43,15 +43,19 @@ def build_collection_command(project_root: Path, catalog_root: Path, contact: st
     return command
 
 
-def collect_pending(project_root: Path, catalog_root: Path, photos_root: Path, contact: str) -> int:
+def collect_pending(
+    project_root: Path, catalog_root: Path, photos_root: Path, contact: str, *, allow_partial: bool = False,
+) -> int:
     pending = pending_collection_species(catalog_root)
     if not pending:
         return 0
     command = build_collection_command(project_root, catalog_root, contact)
     completed = subprocess.run(command, check=False)
-    if completed.returncode != 0:
-        return completed.returncode
     library = PhotoLibrary(catalog_root, photos_root)
     library.write_workflow_metadata()
-    mark_collection_complete(catalog_root, pending)
-    return 0
+    if completed.returncode == 0:
+        mark_collection_complete(catalog_root, pending)
+        return 0
+    if allow_partial:
+        return 0
+    return completed.returncode
