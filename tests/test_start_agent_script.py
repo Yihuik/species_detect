@@ -33,3 +33,9 @@ def test_start_agent_resolves_its_root_when_project_root_is_omitted(tmp_path: Pa
     assert result.returncode != 0
     assert f"Missing .env file: {tmp_path / '.env'}" in output
     assert "Split-Path" not in output
+
+
+def test_start_agent_passes_the_configured_dashscope_base_url_to_python() -> None:
+    script = (Path(__file__).resolve().parents[1] / "tools" / "start_agent.ps1").read_text(encoding="utf-8")
+
+    assert "--base-url $env:DASHSCOPE_BASE_URL" in script

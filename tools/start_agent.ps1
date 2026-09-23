@@ -33,6 +33,9 @@ Get-Content -LiteralPath $envFile | ForEach-Object {
 if (-not $env:DASHSCOPE_API_KEY) {
     throw "DASHSCOPE_API_KEY is not set after loading .env"
 }
+if (-not $env:DASHSCOPE_BASE_URL) {
+    $env:DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+}
 
 $env:PYTHONPATH = Join-Path $root "src"
 $env:PYTHONUTF8 = "1"
@@ -52,6 +55,7 @@ try {
         --metadata-csv (Join-Path $root "photos/workflow_metadata.csv") `
         --live `
         --model $Model `
+        --base-url $env:DASHSCOPE_BASE_URL `
         --run-dir $runDir
     if ($LASTEXITCODE -ne 0) { throw "Automatic labeling failed with exit code $LASTEXITCODE" }
 }
