@@ -71,7 +71,10 @@ def test_cli_offline_and_resume(tmp_path):
     first=subprocess.run(command,cwd=project,env=env,capture_output=True,text=True,encoding='utf-8')
     assert first.returncode==0, first.stderr
     audit=(tmp_path/'run/audit.json').read_bytes()
+    old_mtime_ns=1_000_000_000
+    os.utime(tmp_path/'run/audit.json',ns=(old_mtime_ns,old_mtime_ns))
     second=subprocess.run(command,cwd=project,env=env,capture_output=True,text=True,encoding='utf-8')
     assert second.returncode==0, second.stderr
     assert (tmp_path/'run/audit.json').read_bytes()==audit
+    assert (tmp_path/'run/audit.json').stat().st_mtime_ns==old_mtime_ns
     assert json.loads(second.stdout)['done']==1

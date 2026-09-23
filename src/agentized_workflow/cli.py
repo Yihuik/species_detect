@@ -125,6 +125,15 @@ def _legacy_main(argv: Sequence[str]) -> int:
         engine.add(spec)
     counts = {"done": 0, "needs_review": 0, "run_dir": str(store.root)}
     for spec in specs:
+        state = store.get(spec.task_id)
+        terminal_outputs_exist = (
+            (state.phase != "done" or (store.root / "results" / f"{spec.task_id}.json").is_file())
+            and (store.root / "needs_review.json").is_file()
+            and (store.root / "audit.json").is_file()
+        )
+        if state.phase in {"done", "needs_review"} and terminal_outputs_exist:
+            counts[state.phase] += 1
+            continue
         counts[engine.run(spec.task_id).phase] += 1
     print(json.dumps(counts, ensure_ascii=True))
     return 0
