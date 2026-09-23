@@ -15,6 +15,8 @@ SQLite state. Collection and new remote downloads are outside this scope.
 - Input manifest: `photos/workflow_metadata.csv`
 - Authoritative task state: `runs/agent-20260922-142848/state.sqlite3`
 - Run artifacts and bounded logs: `runs/agent-20260922-142848/`
+- Generated bbox JSON: `runs/agent-20260922-142848/results/`
+- Generated local photos with boxes and species labels: `runs/agent-20260922-142848/annotated/`
 - Launcher configuration: project-root `.env`; credentials are never logged,
   committed, or copied into this document.
 
@@ -45,7 +47,8 @@ SQLite state. Collection and new remote downloads are outside this scope.
 | No `.env` found | Launchers initially resolved their own directory rather than the project root. Use the project-root configuration path. |
 | `visibility_error:HTTPError` on many tasks | A recovery PowerShell process passed a public default URL. Terminate its process tree; restore only rows with this reason and no attempts; relaunch with an explicit configured URL. |
 | Parent stopped but Python continued | PowerShell cancellation does not guarantee descendant termination. Inspect the process tree and terminate the owned Python child before recovery. |
-| Long delay before new model calls | The CLI reprocesses terminal tasks and rewrites result/audit output during resume. This is an execution bottleneck, not evidence that the configured model endpoint is unavailable. |
+| Long delay before new model calls | Older CLI builds reprocessed terminal tasks and rewrote result/audit output during resume. Commit `cd0b1fb` skips terminal tasks whose outputs exist. |
+| No marked-up photo despite completed JSON | Run the local renderer below to backfill `annotated/` from `results/`; it does not request the model or alter task state. |
 
 ## Current recovery procedure
 
@@ -58,10 +61,21 @@ SQLite state. Collection and new remote downloads are outside this scope.
    time in the session update.
 5. Perform only the user-requested delayed static check. For normal operation,
    do not live-poll the process.
+6. After new JSON results appear, backfill marked-up photos with:
+
+   ```powershell
+   $env:PYTHONPATH = 'D:\codex\new-agent\src'
+   python -m agentized_workflow.render_labels `
+     --photos-root 'D:\codex\new-agent\photos' `
+     --run-dir 'D:\codex\new-agent\runs\agent-20260922-142848'
+   ```
+
+   Rerunning this command skips photos already rendered from current JSON.
 
 ## Legal terminal evidence
 
 The run is complete only when phase counts contain no runnable phase, the
-worker has ended, and the results/audit outputs have timestamps at or after the
-last task-state update. `needs_review` is a scoped terminal for individual
+worker has ended, the results/audit outputs have timestamps at or after the
+last task-state update, and the number of `annotated/*.jpg` files equals the
+number of `done` tasks. `needs_review` is a scoped terminal for individual
 images and must retain its recorded reason.
