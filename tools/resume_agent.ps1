@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Contact,
+    [string]$RunDir,
     [string]$ProjectRoot = "",
     [string]$Model = "qwen3-vl-plus"
 )
@@ -11,11 +11,15 @@ if (-not $ProjectRoot) {
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
 }
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
+$run = (Resolve-Path -LiteralPath $RunDir).Path
+if (-not $run.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "RunDir must remain under the project root: $root"
+}
+
 $envFile = Join-Path $root ".env"
 if (-not (Test-Path -LiteralPath $envFile)) {
     throw "Missing .env file: $envFile"
 }
-
 Get-Content -LiteralPath $envFile | ForEach-Object {
     $line = $_.Trim()
     if (-not $line -or $line.StartsWith("#")) { return }
@@ -29,7 +33,6 @@ Get-Content -LiteralPath $envFile | ForEach-Object {
     }
     [Environment]::SetEnvironmentVariable($name, $value, "Process")
 }
-
 if (-not $env:DASHSCOPE_API_KEY) {
     throw "DASHSCOPE_API_KEY is not set after loading .env"
 }
@@ -39,25 +42,16 @@ if (-not $env:DASHSCOPE_BASE_URL) {
 
 $env:PYTHONPATH = Join-Path $root "src"
 $env:PYTHONUTF8 = "1"
-$runStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$runDir = Join-Path $root "runs/agent-$runStamp"
-
 Push-Location $root
 try {
-    python -m agentized_workflow.cli photos sync --project-root $root
-    if ($LASTEXITCODE -ne 0) { throw "Catalog sync failed with exit code $LASTEXITCODE" }
-
-    python -m agentized_workflow.cli photos collect --project-root $root --contact $Contact --allow-partial
-    if ($LASTEXITCODE -ne 0) { throw "Public-source collection failed with exit code $LASTEXITCODE" }
-
     python -m agentized_workflow.cli `
         --input-dir (Join-Path $root "photos") `
         --metadata-csv (Join-Path $root "photos/workflow_metadata.csv") `
         --live `
         --model $Model `
         --base-url $env:DASHSCOPE_BASE_URL `
-        --run-dir $runDir
-    if ($LASTEXITCODE -ne 0) { throw "Automatic labeling failed with exit code $LASTEXITCODE" }
+        --run-dir $run
+    if ($LASTEXITCODE -ne 0) { throw "Resumed automatic labeling failed with exit code $LASTEXITCODE" }
 }
 finally {
     Pop-Location

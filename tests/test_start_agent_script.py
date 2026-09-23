@@ -39,3 +39,14 @@ def test_start_agent_passes_the_configured_dashscope_base_url_to_python() -> Non
     script = (Path(__file__).resolve().parents[1] / "tools" / "start_agent.ps1").read_text(encoding="utf-8")
 
     assert "--base-url $env:DASHSCOPE_BASE_URL" in script
+    assert "DASHSCOPE_BASE_URL is not set after loading .env" in script
+    assert "https://dashscope.aliyuncs.com/compatible-mode/v1" not in script
+
+
+def test_resume_agent_uses_the_existing_run_directory_and_configured_base_url() -> None:
+    script = (Path(__file__).resolve().parents[1] / "tools" / "resume_agent.ps1").read_text(encoding="utf-8")
+
+    assert "[string]$RunDir" in script
+    assert "--base-url $env:DASHSCOPE_BASE_URL" in script
+    assert "DASHSCOPE_BASE_URL is not set after loading .env" in script
+    assert "https://dashscope.aliyuncs.com/compatible-mode/v1" not in script
