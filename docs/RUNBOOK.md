@@ -37,8 +37,9 @@ SQLite state. Collection and new remote downloads are outside this scope.
    stop the worker, make a timestamped SQLite backup, and reset only those
    rows to `visibility`.
 7. Treat `.env`, photos, databases, run logs, and generated audit files as
-   local artifacts. Code and documentation may be pushed; photos are never
-   uploaded.
+   local artifacts. Code and documentation may be pushed to GitHub; photos and
+   generated outputs are never pushed there. The user separately authorized
+   sending photo bytes to the configured MaaS endpoint for model labeling.
 
 ## Established failure signatures
 
