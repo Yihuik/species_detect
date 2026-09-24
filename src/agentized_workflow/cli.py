@@ -97,7 +97,7 @@ def _legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threshold", type=float, default=.7)
     parser.add_argument("--max-targets", type=int, default=10)
     parser.add_argument("--model", default="qwen3-vl-plus")
-    parser.add_argument("--base-url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    parser.add_argument("--base-url", help="required HTTPS model endpoint for --live")
     parser.add_argument("--planner-model", help="optional exception-only planning LLM, requires --live")
     parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY")
     parser.add_argument("--timeout", type=float, default=90)
@@ -109,6 +109,8 @@ def _legacy_main(argv: Sequence[str]) -> int:
     args = _legacy_parser().parse_args(argv)
     if args.planner_model and not args.live:
         raise ValueError("--planner-model requires --live")
+    if args.live and not args.base_url:
+        raise ValueError("--base-url is required for --live")
     mapping = json.loads(args.directory_map.read_text(encoding="utf-8-sig")) if args.directory_map else None
     specs = load_tasks(args.input_dir, args.metadata_csv, directory_map=mapping)
     planner = None

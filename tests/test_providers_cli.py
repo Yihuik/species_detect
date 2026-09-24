@@ -58,6 +58,19 @@ def test_insecure_endpoint_rejected(monkeypatch):
     with pytest.raises(ValueError): HttpChat('http://example.invalid',api_key_env='TEST_AGENT_KEY')
 
 
+def test_live_cli_requires_explicit_base_url(tmp_path, monkeypatch):
+    from agentized_workflow.cli import main
+
+    Image.new('RGB',(100,80)).save(tmp_path/'a.png')
+    csv=tmp_path/'metadata.csv'
+    csv.write_text('source_image,species\na.png,可信名称\n',encoding='utf-8')
+    monkeypatch.delenv('DASHSCOPE_API_KEY',raising=False)
+
+    with pytest.raises(ValueError,match='--base-url'):
+        main(['--input-dir',str(tmp_path),'--metadata-csv',str(csv),
+              '--live','--run-dir',str(tmp_path/'run')])
+
+
 def test_cli_offline_and_resume(tmp_path):
     Image.new('RGB',(100,80)).save(tmp_path/'a.png')
     csv=tmp_path/'metadata.csv'; csv.write_text('source_image,species\na.png,可信名称\n',encoding='utf-8')

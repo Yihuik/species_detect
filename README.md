@@ -1,6 +1,6 @@
 # 独立 Metadata Agent 工作流
 
-所有新增代码、测试、示例和产物位于 `D:/codex/new-agent`。原项目 `D:/codex/qwen-vl` 仅用于审查，未导入或调用其写出流程。该实现覆盖前半部分定位流程；标注图绘制、知识库检索和后续业务处理不在本阶段范围。
+所有新增代码、测试、示例和产物位于 `D:/codex/new-agent`。原项目 `D:/codex/qwen-vl` 仅用于审查，未导入或调用其写出流程。当前实现覆盖物种照片库、定位与标注图绘制；知识库检索和后续业务处理尚未实现。后续开发规范见 [工程与运维约定](docs/ENGINEERING.md)，长任务的恢复与验收见 [运行手册](docs/RUNBOOK.md)。
 
 ## 快速运行（离线，无模型费用）
 
@@ -46,6 +46,7 @@ python -m agentized_workflow.cli --input-dir examples/images --metadata-csv exam
 导出文件可从数据库重复生成：
 
 - `results/<task_id>.json`：可信名称、选定框、像素坐标、来源哈希、策略和被选轮次。
+- `annotated/<task_id>.jpg`：由已完成的 JSON 和原图离线生成，显示框与可信物种名称；增量回填命令见运行手册。
 - `needs_review.json`：完整待人工审核任务（原因、来源、历次框或错误类型）。人工审核为自动流程终止出口，没有自动再次入队、无限重试或自动确认功能。
 - `audit.json`：有序审计事件，包括调用意图、结果、决策、终止状态。数据库 events 表保留权威日志；JSON 是可重建快照。
 
@@ -53,20 +54,20 @@ python -m agentized_workflow.cli --input-dir examples/images --metadata-csv exam
 
 运行目录必须位于新项目内，原图只读。`needs_review` 是成功完成自动流程的一种状态，所以 CLI 退出码为 0，同时输出非零审核数；配置或数据库错误为非零退出码。请以队列数量判断是否尚需人工处理。
 
-## 可选真实模型（本次未运行）
+## 真实模型运行
 
-显式 `--live` 才会联网；不会读取原项目 `.env`。在环境中提供 `DASHSCOPE_API_KEY` 后运行：
+显式 `--live` 才会联网；不会读取原项目 `.env`。项目根目录 `.env` 由启动脚本加载；直接调用 CLI 时，须先在当前进程提供 `DASHSCOPE_API_KEY` 和 `DASHSCOPE_BASE_URL`，并明确传递 endpoint：
 
 ```powershell
-python -m agentized_workflow.cli --input-dir D:/path/to/images --metadata-csv D:/path/to/metadata.csv --live --model qwen3-vl-plus --run-dir D:/codex/new-agent/runs/live01
+python -m agentized_workflow.cli --input-dir D:/path/to/images --metadata-csv D:/path/to/metadata.csv --live --model qwen3-vl-plus --base-url $env:DASHSCOPE_BASE_URL --run-dir D:/codex/new-agent/runs/live01
 ```
 
 增加 `--planner-model <已确认可用的规划模型名>` 接入规划 LLM。视觉与规划默认共享指定 endpoint 和 key，可在 Python 中注入不同 transport。endpoint 用 `--base-url` 指定；`--timeout` 默认 90 秒且上限 600 秒。
 
-默认使用与原客户端相同的 JSON-object 响应方式并在本地强校验。仅在服务支持该 schema 时使用 `--structured` 请求服务端严格 JSON Schema。具体模型、参数与服务端兼容性尚未真实验证；不支持时会进入审核，而不会放宽约束或偷偷重试。实际成本、视觉质量和 IoU 阈值需另做小样本标注评测。
+默认使用与原客户端相同的 JSON-object 响应方式并在本地强校验。仅在服务支持该 schema 时使用 `--structured` 请求服务端严格 JSON Schema。当前运行已真实调用项目配置的 MaaS endpoint；通过接口调用不等于视觉质量合格，实际成本、标注质量和 IoU 阈值仍需小样本人工评测。若出现成批 HTTP 错误，应按运行手册停机排查，不能把它们当成真实图片质量问题。
 
 ## 模块
 
-`models.py`：不可变 Pydantic 契约；`metadata.py`：可信来源与输入身份；`tools.py`：固定白名单几何工具和视觉协议；`storage.py`：事务、锁、审核队列、原子导出；`workflow.py`：有界状态机；`planner.py`：有限动作规划接口；`providers.py`：独立视觉/规划 HTTP 适配；`cli.py`：离线和显式联网入口。
+`models.py`：不可变 Pydantic 契约；`metadata.py`：可信来源与输入身份；`tools.py`：固定白名单几何工具和视觉协议；`storage.py`：事务、锁、审核队列、原子导出；`workflow.py`：有界状态机；`planner.py`：有限动作规划接口；`providers.py`：独立视觉/规划 HTTP 适配；`render_labels.py`：离线画框；`cli.py`：离线和显式联网入口。
 
 此处的白名单是 Python 调用边界，规划 LLM 没有通用工具调用能力。数据库写入只由状态机控制；人工修改数据库、替换代码或自定义不守约的 provider 不属于这一边界可防御的行为。
