@@ -65,8 +65,10 @@ Windows versions, following [GitHub's Python CI guide](https://docs.github.com/a
   active worker, a consistent JSON/annotated count for `done`, and a final
   reason summary for reviews. Document what still needs manual review.
 
-For process launch and exit-state capture, use the documented PowerShell
+For long Windows runs, use the documented PowerShell
 [`Start-Process` options](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.management/start-process?view=powershell-7.5)
-or a retained foreground terminal session. Python's
+with a hidden Python process and redirected output. A retained foreground
+terminal session disappeared during the 2026-09-24 run; its lifetime is not a
+reliable ownership mechanism here. Python's
 [logging guide](https://docs.python.org/3/howto/logging.html) is the reference
 for structured application logs; redact secrets before emitting them.

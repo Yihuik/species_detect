@@ -48,6 +48,7 @@ SQLite state. Collection and new remote downloads are outside this scope.
 | No `.env` found | Launchers initially resolved their own directory rather than the project root. Use the project-root configuration path. |
 | `visibility_error:HTTPError` on many tasks | A recovery PowerShell process passed a public default URL. Terminate its process tree; restore only rows with this reason and no attempts; relaunch with an explicit configured URL. |
 | Parent stopped but Python continued | PowerShell cancellation does not guarantee descendant termination. Inspect the process tree and terminate the owned Python child before recovery. |
+| Foreground terminal session disappeared | On 2026-09-24 the retained foreground session and its Python child vanished after about nine hours. No Windows application-crash event was found; the precise trigger is unknown. Back up SQLite, preserve in-flight requests as uncertain, then launch Python directly with `Start-Process -WindowStyle Hidden`, explicit `--base-url`, and redirected stdout/stderr. Verify process identity at launch and a new result after initialization. |
 | Long delay before new model calls | Older CLI builds reprocessed terminal tasks and rewrote result/audit output during resume. Commit `cd0b1fb` skips terminal tasks whose outputs exist. |
 | No marked-up photo despite completed JSON | Run the local renderer below to backfill `annotated/` from `results/`; it does not request the model or alter task state. |
 
@@ -57,9 +58,13 @@ SQLite state. Collection and new remote downloads are outside this scope.
 2. If no valid worker is active, reconcile only the known recoverable HTTP
    failure rows as described above.
 3. Load `.env`, verify both the API key and base URL are present without
-   printing either, then launch Python with the explicit `--base-url` value.
-4. Verify the launched child uses the configured host. Record the PID and start
-   time in the session update.
+   printing either, then launch Python directly with the explicit `--base-url`
+   value. For a long Windows run, use a hidden background Python process with
+   stdout/stderr redirected to local run logs. Do not launch a PowerShell
+   wrapper that changes the endpoint.
+4. Verify the launched child uses the configured host. Record the PID, process
+   creation time, and log paths. Make one delayed check that task counts or
+   result files advance; process existence alone does not prove progress.
 5. Perform only the user-requested delayed static check. For normal operation,
    do not live-poll the process.
 6. After new JSON results appear, backfill marked-up photos with:
