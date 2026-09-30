@@ -164,6 +164,25 @@ def test_zip_uses_its_top_level_species_directory(tmp_path: Path) -> None:
     assert (batch / "upload.zip").is_file()
 
 
+def test_zip_inside_species_directory_uses_enclosing_species(tmp_path: Path) -> None:
+    catalog_root = catalog(tmp_path)
+    source = tmp_path / "source.png"
+    image(source, (20, 40, 60))
+    batch = tmp_path / "input" / "inbox" / "batch"
+    archive_path = batch / "甲蟹" / "phone-photos.zip"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.write(source, "from_zip.png")
+    library = PhotoLibrary(catalog_root, tmp_path / "photos")
+
+    report = library.ingest_batch(batch)
+
+    assert report.accepted == 1
+    assert report.unknown_species == 0
+    assert library.workflow_rows()[0]["species"] == "甲蟹"
+    assert archive_path.is_file()
+
+
 def test_zip_path_escape_is_held_out_of_photos(tmp_path: Path) -> None:
     catalog_root = catalog(tmp_path)
     source = tmp_path / "source.png"

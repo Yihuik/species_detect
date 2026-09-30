@@ -195,7 +195,8 @@ class PhotoLibrary:
                     with package.open(member) as source, destination.open("wb") as target:
                         shutil.copyfileobj(source, target)
                     if destination.suffix.casefold() in IMAGE_EXTENSIONS:
-                        images.append((destination, member_path.as_posix()))
+                        relative = archive.relative_to(batch).parent / member_path
+                        images.append((destination, relative.as_posix()))
         return images
 
     def _active_species(self) -> set[str]:

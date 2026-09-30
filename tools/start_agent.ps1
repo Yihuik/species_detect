@@ -50,6 +50,9 @@ try {
     python -m agentized_workflow.cli photos collect --project-root $root --contact $Contact --allow-partial
     if ($LASTEXITCODE -ne 0) { throw "Public-source collection failed with exit code $LASTEXITCODE" }
 
+    python -m agentized_workflow.cli photos ingest --project-root $root
+    if ($LASTEXITCODE -ne 0) { throw "User photo ingestion failed with exit code $LASTEXITCODE" }
+
     python -m agentized_workflow.cli `
         --input-dir (Join-Path $root "photos") `
         --metadata-csv (Join-Path $root "photos/workflow_metadata.csv") `
