@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Sequence
+from urllib.parse import urlsplit
 
 from .collection_runner import collect_pending
 from .legacy_provenance import migrate_legacy_provenance
+from .label_registry import LabelRegistry, profile_for
 from .metadata import load_tasks
 from .photo_library import IngestReport, PhotoLibrary
 from .planner import JsonPlanner
@@ -84,10 +87,92 @@ def _inbox_batches(inbox: Path) -> list[Path]:
     return ([inbox] if direct_files else []) + batches
 
 
+def _labels_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(description="跨运行标注结果与人工复核")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("plan", "import-run", "review", "correct", "queue", "list", "render-missing"):
+        child = commands.add_parser(name)
+        child.add_argument("--photos-root", type=Path, required=True)
+    for name in ("plan", "import-run"):
+        child = commands.choices[name]
+        child.add_argument("--model", default="qwen3-vl-plus")
+        child.add_argument("--base-url")
+        child.add_argument("--env-file", type=Path, help="read only DASHSCOPE_BASE_URL from project .env")
+        child.add_argument("--threshold", type=float, default=.7)
+        child.add_argument("--max-targets", type=int, default=10)
+        child.add_argument("--structured", action="store_true")
+        child.add_argument("--planner-model")
+    commands.choices["plan"].add_argument("--metadata-csv", type=Path)
+    commands.choices["plan"].add_argument("--retry-rejected", action="store_true")
+    commands.choices["plan"].add_argument("--retry-case-id", type=int)
+    commands.choices["import-run"].add_argument("--run-dir", type=Path, required=True)
+    for name in ("review", "correct"):
+        child = commands.choices[name]
+        child.add_argument("--case-id", type=int, required=True)
+        child.add_argument("--reviewer", required=True)
+        child.add_argument("--reason", required=True)
+    commands.choices["review"].add_argument("--decision", choices=("approve", "reject"), required=True)
+    commands.choices["correct"].add_argument("--boxes-file", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if args.command == "plan":
+        runs_root = args.photos_root.resolve().parent / "runs"
+        unmanaged = [str(path.parent) for path in runs_root.glob("agent-*/state.sqlite3")
+                     if not (path.parent / "label_profile.json").is_file()]
+        if unmanaged:
+            raise ValueError("historical runs require explicit photos labels import-run before launch: " +
+                             ", ".join(unmanaged))
+    registry = LabelRegistry(args.photos_root)
+    if args.command in {"plan", "import-run"}:
+        if bool(args.base_url) == bool(args.env_file):
+            raise ValueError("supply exactly one of --base-url or --env-file")
+        base_url = args.base_url
+        if args.env_file:
+            for line in args.env_file.read_text(encoding="utf-8-sig").splitlines():
+                match = re.fullmatch(r"\s*(?:export\s+)?DASHSCOPE_BASE_URL=(.*)", line)
+                if match:
+                    base_url = match.group(1).strip().strip("\"'")
+        parsed = urlsplit(base_url or "")
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username or
+                parsed.password or parsed.query or parsed.fragment):
+            raise ValueError("DASHSCOPE_BASE_URL must be an explicit HTTPS endpoint")
+        profile = profile_for(args.model, base_url, args.threshold, args.max_targets,
+                              args.structured, args.planner_model)
+    if args.command == "import-run":
+        report = registry.import_run(args.run_dir, profile, threshold=args.threshold,
+                                     max_targets=args.max_targets, model=args.model)
+        print(json.dumps(report, ensure_ascii=False))
+        return 1 if report["invalid"] else 0
+    if args.command == "plan":
+        metadata = args.metadata_csv or args.photos_root / "workflow_metadata.csv"
+        specs = load_tasks(args.photos_root, metadata)
+        report = registry.plan(specs, profile, retry_rejected=args.retry_rejected,
+                               retry_case_id=args.retry_case_id)
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
+    if args.command == "review":
+        registry.review(args.case_id, args.decision, args.reviewer, args.reason)
+        print(json.dumps({"case_id": args.case_id, "decision": args.decision}))
+        return 0
+    if args.command == "correct":
+        boxes = json.loads(args.boxes_file.read_text(encoding="utf-8-sig"))["boxes"]
+        case_id = registry.correct(args.case_id, boxes, args.reviewer, args.reason)
+        print(json.dumps({"case_id": case_id, "review_status": "approved"}))
+        return 0
+    if args.command == "queue":
+        print(json.dumps(registry.review_queue(), ensure_ascii=False))
+        return 0
+    if args.command == "render-missing":
+        report = registry.render_missing()
+        print(json.dumps(report, ensure_ascii=False))
+        return 1 if report["failed"] else 0
+    print(json.dumps(registry.list_cases(), ensure_ascii=False))
+    return 0
+
+
 def _legacy_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bounded metadata grounding: isolated outputs, no implicit retries")
-    parser.add_argument("--input-dir", type=Path, required=True)
-    source = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--input-dir", type=Path)
+    source = parser.add_mutually_exclusive_group()
     source.add_argument("--metadata-csv", type=Path)
     source.add_argument("--directory-map", type=Path, help="JSON object mapping exact relative directories to trusted species names")
     provider = parser.add_mutually_exclusive_group(required=True)
@@ -102,17 +187,61 @@ def _legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY")
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--structured", action="store_true", help="request strict JSON schema if supported by provider")
+    parser.add_argument("--label-registry", type=Path, help="local photos root for workflow-scoped reuse")
+    parser.add_argument("--retry-rejected", action="store_true", help="explicitly relabel human-rejected results")
+    parser.add_argument("--retry-case-id", type=int, help="relabel only this rejected case")
+    parser.add_argument("--allow-new-profile", action="store_true",
+                        help="explicitly permit relabeling when model or workflow rules changed")
+    parser.add_argument("--resume-existing", action="store_true", help="resume recorded run tasks, ignoring current photo metadata")
     return parser
 
 
 def _legacy_main(argv: Sequence[str]) -> int:
     args = _legacy_parser().parse_args(argv)
+    if not args.resume_existing and (args.input_dir is None or
+            (args.metadata_csv is None) == (args.directory_map is None)):
+        raise ValueError("supply --input-dir and exactly one trusted metadata source")
+    if args.resume_existing and not (args.run_dir / "state.sqlite3").is_file():
+        raise ValueError("--resume-existing requires an existing run state.sqlite3")
     if args.planner_model and not args.live:
         raise ValueError("--planner-model requires --live")
     if args.live and not args.base_url:
         raise ValueError("--base-url is required for --live")
-    mapping = json.loads(args.directory_map.read_text(encoding="utf-8-sig")) if args.directory_map else None
-    specs = load_tasks(args.input_dir, args.metadata_csv, directory_map=mapping)
+    if args.resume_existing:
+        store = Store(args.run_dir)
+        specs = [state.spec for state in store.all_states()]
+        if not specs:
+            raise ValueError("existing run has no tasks")
+    else:
+        mapping = json.loads(args.directory_map.read_text(encoding="utf-8-sig")) if args.directory_map else None
+        specs = load_tasks(args.input_dir, args.metadata_csv, directory_map=mapping)
+    registry = LabelRegistry(args.label_registry) if args.label_registry else None
+    profile = profile_for(args.model, args.base_url if args.live else None,
+                          args.threshold, args.max_targets, args.structured, args.planner_model)
+    reused = review = 0
+    if registry and not args.resume_existing:
+        preflight = registry.plan(specs, profile, retry_rejected=args.retry_rejected,
+                                  retry_case_id=args.retry_case_id)
+        if preflight["profile_changed"] and not args.allow_new_profile:
+            raise ValueError("labeling profile changed for existing photos; pass --allow-new-profile explicitly")
+        pending = []
+        for spec in specs:
+            match = registry.lookup(spec, profile, retry_rejected=args.retry_rejected,
+                                    retry_case_id=args.retry_case_id)
+            if match.action == "reuse":
+                reused += 1
+            elif match.action == "review":
+                review += 1
+            elif match.action == "resume":
+                raise ValueError("unfinished task belongs to " + str(match.run_dir) +
+                                 "; resume that run before creating a new one")
+            else:
+                pending.append(spec)
+        specs = pending
+        if not specs:
+            print(json.dumps({"new": 0, "reused": reused, "review": review,
+                              "run_dir": None}, ensure_ascii=True))
+            return 0
     planner = None
     if args.fixture:
         vision = FixtureVision(json.loads(args.fixture.read_text(encoding="utf-8-sig")))
@@ -122,27 +251,50 @@ def _legacy_main(argv: Sequence[str]) -> int:
         if args.planner_model:
             planner = JsonPlanner(ChatPlanner(transport, model=args.planner_model, structured=args.structured))
     store = Store(args.run_dir)
+    if registry:
+        profile_path = store.root / "label_profile.json"
+        if profile_path.is_file():
+            saved = json.loads(profile_path.read_text(encoding="utf-8"))
+            if saved.get("profile") != profile:
+                raise ValueError("run labeling profile changed; use original model and policy")
+        elif args.resume_existing:
+            raise ValueError("run has no labeling profile; import it explicitly before registry resume")
+        else:
+            store.atomic_json("label_profile.json", {"profile": profile, "model": args.model,
+                             "threshold": args.threshold, "max_targets": args.max_targets})
     engine = Engine(store, vision, planner, threshold=args.threshold, max_targets=args.max_targets)
-    for spec in specs:
-        engine.add(spec)
-    counts = {"done": 0, "needs_review": 0, "run_dir": str(store.root)}
+    if not args.resume_existing:
+        for spec in specs:
+            engine.add(spec)
+            if registry:
+                registry.record(store.get(spec.task_id), store.root, profile)
+    counts = {"done": 0, "needs_review": 0, "run_dir": str(store.root),
+              "new": len(specs), "reused": reused, "review": review}
     for spec in specs:
         state = store.get(spec.task_id)
         terminal_outputs_exist = (
             (state.phase != "done" or (store.root / "results" / f"{spec.task_id}.json").is_file())
             and (store.root / "needs_review.json").is_file()
             and (store.root / "audit.json").is_file()
+            and (registry is None or registry.run_result_valid(state, store.root))
         )
         if state.phase in {"done", "needs_review"} and terminal_outputs_exist:
+            if registry:
+                registry.record(state, store.root, profile)
             counts[state.phase] += 1
             continue
-        counts[engine.run(spec.task_id).phase] += 1
+        state = engine.run(spec.task_id)
+        if registry:
+            registry.record(state, store.root, profile)
+        counts[state.phase] += 1
     print(json.dumps(counts, ensure_ascii=True))
     return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:2] == ["photos", "labels"]:
+        return _labels_main(arguments[2:])
     if arguments[:1] == ["photos"]:
         return _photo_main(arguments[1:])
     return _legacy_main(arguments)

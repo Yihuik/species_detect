@@ -67,6 +67,11 @@ class Store:
             raise KeyError(task_id)
         return TaskState.model_validate_json(row[0])
 
+    def all_states(self) -> list[TaskState]:
+        with self.connection() as db:
+            rows = db.execute('SELECT state FROM tasks ORDER BY id').fetchall()
+        return [TaskState.model_validate_json(row[0]) for row in rows]
+
     def save(self, state: TaskState, event: str, detail: dict | None = None):
         # Validate copies as well as external data before committing.
         state = TaskState.model_validate(state.model_dump())

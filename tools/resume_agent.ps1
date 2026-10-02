@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RunDir,
     [string]$ProjectRoot = "",
-    [string]$Model = "qwen3-vl-plus"
+    [string]$Model = "qwen3-vl-plus",
+    [double]$Threshold = 0.7
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,15 +13,16 @@ if (-not $ProjectRoot) {
 }
 $root = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $run = (Resolve-Path -LiteralPath $RunDir).Path
-if (-not $run.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "RunDir must remain under the project root: $root"
+$runsRoot = (Join-Path $root "runs").TrimEnd('\') + '\'
+if (-not $run.StartsWith($runsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "RunDir must remain under the runs directory: $runsRoot"
 }
 
 $envFile = Join-Path $root ".env"
 if (-not (Test-Path -LiteralPath $envFile)) {
     throw "Missing .env file: $envFile"
 }
-Get-Content -LiteralPath $envFile | ForEach-Object {
+Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
     $line = $_.Trim()
     if (-not $line -or $line.StartsWith("#")) { return }
     if ($line -notmatch '^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
@@ -42,17 +44,33 @@ if (-not $env:DASHSCOPE_BASE_URL) {
 
 $env:PYTHONPATH = Join-Path $root "src"
 $env:PYTHONUTF8 = "1"
+try {
+    $launcherLock = [System.IO.File]::Open(
+        (Join-Path $root "runs/label-launch.lock"),
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+}
+catch [System.IO.IOException] {
+    throw "another labeling launcher is already running; check its process before retrying"
+}
 Push-Location $root
 try {
     python -m agentized_workflow.cli `
-        --input-dir (Join-Path $root "photos") `
-        --metadata-csv (Join-Path $root "photos/workflow_metadata.csv") `
+        --resume-existing `
         --live `
         --model $Model `
         --base-url $env:DASHSCOPE_BASE_URL `
+        --threshold $Threshold `
+        --label-registry (Join-Path $root "photos") `
         --run-dir $run
     if ($LASTEXITCODE -ne 0) { throw "Resumed automatic labeling failed with exit code $LASTEXITCODE" }
+    python -m agentized_workflow.render_labels `
+        --photos-root (Join-Path $root "photos") --run-dir $run
+    if ($LASTEXITCODE -ne 0) { throw "Rendering failed with exit code $LASTEXITCODE" }
 }
 finally {
-    Pop-Location
+    try { Pop-Location }
+    finally { $launcherLock.Dispose() }
 }

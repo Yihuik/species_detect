@@ -10,11 +10,21 @@ PowerShell，从新项目运行：
 Set-Location D:/codex/new-agent
 $env:PYTHONPATH = 'D:/codex/new-agent/src'
 $env:PYTHONDONTWRITEBYTECODE = '1'
-python -m pytest tests -q --basetemp=D:/codex/new-agent/.test_tmp
+python -m pytest -q --basetemp .pytest_tmp
 python -m agentized_workflow.cli --input-dir examples/images --metadata-csv examples/metadata.csv --fixture examples/responses.json --run-dir D:/codex/new-agent/runs/demo
 ```
 
 再次执行相同命令即断点续跑，已结束任务不再次请求模型。示例有 3 张纯色占位图和预设响应，仅验证控制逻辑：2 个 done、1 个 needs_review。它们不证明视觉定位准确率。
+
+实际照片库的一键入口是 `tools/start_agent.ps1`。首次升级请先按
+[运行手册](docs/RUNBOOK.md) 将已有运行导入标注结果索引，再启动：
+
+```powershell
+Set-Location 'D:\codex\new-agent'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 -Contact '工作人员或项目联系邮箱'
+```
+
+脚本先同步、采集和导入照片，再续跑未完成任务；相同照片、物种和流程版本已有有效标注时跳过模型。没有新任务便不创建时间戳运行目录。
 
 依赖为 Python >=3.10、Pydantic 2 和 Pillow；测试还需 pytest，声明见 pyproject.toml。开发和运行使用源码目录，不需修改原项目的虚拟环境或配置。
 
@@ -39,15 +49,15 @@ python -m agentized_workflow.cli --input-dir examples/images --metadata-csv exam
 
 ## 持久化、审核与恢复
 
-`runs/<run>/state.sqlite3` 是唯一权威状态源，任务更新与审计事件在同一 SQLite 事务提交。每个外部调用前先写意图；进程崩溃后遇到未完成意图，直接转 `needs_review/interrupted_call`，不会重发可能已计费的请求。已完成第一轮定位可在重启后继续第二轮。
+`runs/<run>/state.sqlite3` 是该次运行的执行状态权威源，任务更新与审计事件在同一 SQLite 事务提交。跨运行可复用结果和人工审核事件另存于本地 `photos/photo_library.sqlite3`；两者不是同一个状态。每个外部调用前先写意图；进程崩溃后遇到未完成意图，直接转 `needs_review/interrupted_call`，不会重发可能已计费的请求。已完成第一轮定位可在重启后继续第二轮。
 
-跨进程操作系统锁保护整个单步执行，进程死亡会自动释放，避免两个 runner 重复提交请求。每个 run 串行运行，不支持分布式调度。变更 IoU 门槛、目标数、图片内容或可信 metadata 后，应另开 run 目录；已有任务不被覆盖改名。
+跨进程操作系统锁保护整个单步执行，进程死亡会自动释放。每个 run 串行运行，不支持分布式调度。续跑从原运行保存的任务信息读取，不用照片库当前 CSV 改写旧任务；新增照片在新运行中处理。变更 IoU 门槛、目标数、模型或提示词实现会形成新流程版本，必须显式允许后才会重标原有照片。
 
 导出文件可从数据库重复生成：
 
 - `results/<task_id>.json`：可信名称、选定框、像素坐标、来源哈希、策略和被选轮次。
 - `annotated/<task_id>.jpg`：由已完成的 JSON 和原图离线生成，显示框与可信物种名称；增量回填命令见运行手册。
-- `needs_review.json`：完整待人工审核任务（原因、来源、历次框或错误类型）。人工审核为自动流程终止出口，没有自动再次入队、无限重试或自动确认功能。
+- `needs_review.json`：该运行需要人工复核的任务（原因、来源、历次框或错误类型）。跨运行的人工认可、驳回和修正由标注索引记录；驳回不会在下次一键启动时自动重标。
 - `audit.json`：有序审计事件，包括调用意图、结果、决策、终止状态。数据库 events 表保留权威日志；JSON 是可重建快照。
 
 终止状态提交后若导出失败，再次运行仅重建文件、不请求模型。输入读写失败不会假装成功；异常审计不保存 API key、HTTP 请求头或潜在含凭证的异常正文。规范化模型结果写入审计，不保存原始响应正文。
@@ -69,5 +79,7 @@ python -m agentized_workflow.cli --input-dir D:/path/to/images --metadata-csv D:
 ## 模块
 
 `models.py`：不可变 Pydantic 契约；`metadata.py`：可信来源与输入身份；`tools.py`：固定白名单几何工具和视觉协议；`storage.py`：事务、锁、审核队列、原子导出；`workflow.py`：有界状态机；`planner.py`：有限动作规划接口；`providers.py`：独立视觉/规划 HTTP 适配；`render_labels.py`：离线画框；`cli.py`：离线和显式联网入口。
+
+`label_registry.py`：将机器结果与人工审核分开记录，按完整图片哈希、可信物种和流程版本跨运行复用；提供人工修正的不可变结果和审核历史。工作人员的命令见运行手册。
 
 此处的白名单是 Python 调用边界，规划 LLM 没有通用工具调用能力。数据库写入只由状态机控制；人工修改数据库、替换代码或自定义不守约的 provider 不属于这一边界可防御的行为。
