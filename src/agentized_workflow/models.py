@@ -1,15 +1,34 @@
 from __future__ import annotations
 import math
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 Route = Literal['whole_or_mostly_visible', 'partially_visible', 'mixed']
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, allow_inf_nan=False)
 
+class CarapaceCheck(Contract):
+    status: Literal['not_applicable', 'symmetric', 'unassessable', 'suspected_asymmetry']
+    evidence: str = Field(max_length=300)
+
+    @model_validator(mode='after')
+    def require_suspicion_evidence(self):
+        if self.status == 'suspected_asymmetry' and not self.evidence.strip():
+            raise ValueError('evidence is required for suspected_asymmetry')
+        return self
+
 class Box(Contract):
     bbox: tuple[float, float, float, float]
+    carapace_check: CarapaceCheck | None = None
+
+    @model_serializer(mode='wrap')
+    def serialize_box(self, handler):
+        data = handler(self)
+        # Historical exports keep their original shape when the check is absent.
+        if self.carapace_check is None:
+            data.pop('carapace_check', None)
+        return data
 
     @field_validator('bbox', mode='before')
     @classmethod

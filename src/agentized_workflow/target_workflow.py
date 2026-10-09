@@ -3,7 +3,7 @@ from pathlib import Path
 from uuid import uuid4
 from .metadata import digest
 from .models import Attempt, Localization, Policy, TargetReview, TargetReviewRequest, Visibility, VisionRequest
-from .target_matching import crop_region, map_crop_result, pair_targets, resolve_review
+from .target_matching import apply_carapace_flags, crop_region, map_crop_result, pair_targets, resolve_review
 from .workflow import Engine
 
 TERMINAL = {'done', 'needs_review', 'partial_review'}
@@ -82,7 +82,9 @@ class TargetEngine(Engine):
             if target is None:
                 if all(target.status == 'accepted' for target in state.targets):
                     return self._save(state, 'done', phase='done', reason='all_targets_consistent', in_flight=None)
-                return self._review(state, 'unresolved_targets')
+                reason = ('carapace_asymmetry' if any(t.reason == 'carapace_asymmetry' for t in state.targets)
+                          else 'unresolved_targets')
+                return self._review(state, reason)
             region = crop_region(target, state.spec)
             request = TargetReviewRequest(task=state.spec, request_id=uuid4().hex,
                 target_id=target.target_id, region=region, max_targets=self.policy.max_targets)
@@ -90,6 +92,7 @@ class TargetEngine(Engine):
             targets = tuple(t.model_copy(update={'review': review}) if t.target_id == target.target_id else t for t in state.targets)
             state = self._save(state, 'target_review_intent', targets=targets, in_flight=request.request_id)
             box = pair = score = None
+            result = None
             try:
                 local = Localization.model_validate(self.vision.review_target(request))
                 if len(local.boxes) > self.policy.max_targets:
@@ -104,6 +107,8 @@ class TargetEngine(Engine):
                 'accepted_pair': pair, 'accepted_iou': score,
                 'status': 'accepted' if box is not None else 'needs_review', 'reason': reason})
             targets = tuple(updated if t.target_id == target.target_id else t for t in state.targets)
+            if result is not None:
+                targets = apply_carapace_flags(targets, result.boxes)
             return self._save(state, 'target_review_result', targets=targets, in_flight=None)
         return self._review(state, 'invalid_state')
 

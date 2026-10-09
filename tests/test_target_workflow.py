@@ -130,7 +130,9 @@ def test_crop_provider_sends_context_without_old_predictions(prepared):
     payloads = []
     def transport(payload):
         payloads.append(payload)
-        return json.dumps(reply([100, 100, 500, 500]))
+        return json.dumps({'coordinate_system': 'qwen_0_999', 'boxes': [{
+            'bbox': [100, 100, 500, 500],
+            'carapace_check': {'status': 'not_applicable', 'evidence': ''}}]})
     vision = TargetHttpVision(transport, model='offline', structured=True)
     vision.visibility(__import__('agentized_workflow.models', fromlist=['VisionRequest']).VisionRequest(
         task=spec, request_id='visibility', pass_number=0, max_targets=10))

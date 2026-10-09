@@ -6,6 +6,26 @@ from .tools import iou
 ASSOCIATION_IOU = .25
 CROP_PADDING = .25
 
+
+def carapace_suspect(box):
+    return (box is not None and box.carapace_check is not None
+            and box.carapace_check.status == 'suspected_asymmetry')
+
+
+def apply_carapace_flags(records, boxes):
+    """Refer plausible identities to humans; keep evidence in source responses."""
+    flagged = [box for box in boxes if carapace_suspect(box)]
+    if not flagged:
+        return tuple(records)
+    return tuple(record.model_copy(update={
+        'status': 'needs_review', 'reason': 'carapace_asymmetry',
+        'selected_box': None, 'accepted_pair': None, 'accepted_iou': None})
+        if any(iou(box, candidate) >= ASSOCIATION_IOU
+               for box in flagged
+               for candidate in (record.first_box, record.second_box, record.selected_box)
+               if candidate is not None) else record
+        for record in records)
+
 def pair_targets(left, right, threshold):
     """Only isolated one-to-one overlap components establish target identity."""
     edges = {i: {j for j, b in enumerate(right) if iou(a, b) >= ASSOCIATION_IOU}
@@ -45,7 +65,7 @@ def pair_targets(left, right, threshold):
         if j not in visited_right:
             records.append((len(left)+j, TargetRecord(target_id=f"second-{j+1:03d}",
                 second_box=right[j], status='needs_review', reason='unmatched_target')))
-    return tuple(record for _, record in sorted(records, key=lambda item: item[0]))
+    return apply_carapace_flags((record for _, record in sorted(records, key=lambda item: item[0])), (*left, *right))
 
 def crop_region(target: TargetRecord, spec: TaskSpec):
     a, b = target.first_box.bbox, target.second_box.bbox
@@ -64,7 +84,7 @@ def map_crop_result(result: Localization, region, spec: TaskSpec):
         boxes.append(Box(bbox=[min(999, value) for value in [(x+a*(r-x)/1000)*1000/spec.width,
                               (y+b*(bottom-y)/1000)*1000/spec.height,
                               (x+c*(r-x)/1000)*1000/spec.width,
-                              (y+d*(bottom-y)/1000)*1000/spec.height]]))
+                              (y+d*(bottom-y)/1000)*1000/spec.height]], carapace_check=box.carapace_check))
     return Localization(boxes=tuple(boxes))
 
 def resolve_review(target, result, records, threshold):
@@ -83,5 +103,7 @@ def resolve_review(target, result, records, threshold):
     if len(candidates) != 1:
         return None, None, None, 'review_empty_or_inconsistent' if not candidates else 'review_identity_ambiguous'
     box, first, second = candidates[0]
+    if carapace_suspect(box):
+        return None, None, None, 'carapace_asymmetry'
     pair, score = ('first_review', first) if first > threshold else ('second_review', second)
     return box, pair, score, None
