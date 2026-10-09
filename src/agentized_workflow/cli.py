@@ -18,6 +18,8 @@ from .providers import ChatPlanner, FixtureVision, HttpChat, HttpVision
 from .species_catalog import sync_catalog
 from .storage import PROJECT_ROOT, Store
 from .workflow import Engine
+from .target_workflow import TargetEngine
+from .target_providers import TargetFixtureVision, TargetHttpVision
 
 
 def _project_paths(project_root: Path) -> tuple[Path, Path, Path, Path]:
@@ -98,7 +100,8 @@ def _labels_main(argv: Sequence[str]) -> int:
         child.add_argument("--model", default="qwen3-vl-plus")
         child.add_argument("--base-url")
         child.add_argument("--env-file", type=Path, help="read only DASHSCOPE_BASE_URL from project .env")
-        child.add_argument("--threshold", type=float, default=.7)
+        child.add_argument("--threshold", type=float)
+        child.add_argument("--workflow-version", type=int, choices=(1, 2), default=1)
         child.add_argument("--max-targets", type=int, default=10)
         child.add_argument("--structured", action="store_true")
         child.add_argument("--planner-model")
@@ -114,6 +117,10 @@ def _labels_main(argv: Sequence[str]) -> int:
     commands.choices["review"].add_argument("--decision", choices=("approve", "reject"), required=True)
     commands.choices["correct"].add_argument("--boxes-file", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.command in {'plan', 'import-run'} and args.threshold is None:
+        args.threshold = .75 if args.workflow_version == 2 else .7
+    if args.command in {'plan', 'import-run'} and args.workflow_version == 2 and args.planner_model:
+        raise ValueError('version 2 uses bounded target review, not a planner model')
     if args.command == "plan":
         runs_root = args.photos_root.resolve().parent / "runs"
         unmanaged = [str(path.parent) for path in runs_root.glob("agent-*/state.sqlite3")
@@ -136,10 +143,10 @@ def _labels_main(argv: Sequence[str]) -> int:
                 parsed.password or parsed.query or parsed.fragment):
             raise ValueError("DASHSCOPE_BASE_URL must be an explicit HTTPS endpoint")
         profile = profile_for(args.model, base_url, args.threshold, args.max_targets,
-                              args.structured, args.planner_model)
+                              args.structured, args.planner_model, version=args.workflow_version)
     if args.command == "import-run":
         report = registry.import_run(args.run_dir, profile, threshold=args.threshold,
-                                     max_targets=args.max_targets, model=args.model)
+                                     max_targets=args.max_targets, model=args.model, version=args.workflow_version)
         print(json.dumps(report, ensure_ascii=False))
         return 1 if report["invalid"] else 0
     if args.command == "plan":
@@ -179,7 +186,8 @@ def _legacy_parser() -> argparse.ArgumentParser:
     provider.add_argument("--fixture", type=Path, help="offline response fixture")
     provider.add_argument("--live", action="store_true", help="explicitly enable real model requests")
     parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "runs/default")
-    parser.add_argument("--threshold", type=float, default=.7)
+    parser.add_argument("--threshold", type=float)
+    parser.add_argument("--workflow-version", type=int, choices=(1, 2))
     parser.add_argument("--max-targets", type=int, default=10)
     parser.add_argument("--model", default="qwen3-vl-plus")
     parser.add_argument("--base-url", help="required HTTPS model endpoint for --live")
@@ -209,15 +217,31 @@ def _legacy_main(argv: Sequence[str]) -> int:
         raise ValueError("--base-url is required for --live")
     if args.resume_existing:
         store = Store(args.run_dir)
-        specs = [state.spec for state in store.all_states()]
+        states = store.all_states()
+        specs = [state.spec for state in states]
         if not specs:
             raise ValueError("existing run has no tasks")
+        if any(state.policy != states[0].policy for state in states):
+            raise ValueError('run contains mixed policies')
+        original = states[0].policy
+        if args.workflow_version is not None and args.workflow_version != original.version:
+            raise ValueError('resume must use original workflow version')
+        args.workflow_version = original.version
+        if args.threshold is None:
+            args.threshold = original.threshold
+        if args.max_targets != original.max_targets:
+            raise ValueError('resume must use original max-targets')
     else:
         mapping = json.loads(args.directory_map.read_text(encoding="utf-8-sig")) if args.directory_map else None
         specs = load_tasks(args.input_dir, args.metadata_csv, directory_map=mapping)
+    args.workflow_version = args.workflow_version or 1
+    if args.threshold is None:
+        args.threshold = .75 if args.workflow_version == 2 else .7
+    if args.workflow_version == 2 and args.planner_model:
+        raise ValueError('version 2 uses bounded target review, not a planner model')
     registry = LabelRegistry(args.label_registry) if args.label_registry else None
     profile = profile_for(args.model, args.base_url if args.live else None,
-                          args.threshold, args.max_targets, args.structured, args.planner_model)
+                          args.threshold, args.max_targets, args.structured, args.planner_model, version=args.workflow_version)
     reused = review = 0
     if registry and not args.resume_existing:
         preflight = registry.plan(specs, profile, retry_rejected=args.retry_rejected,
@@ -244,10 +268,12 @@ def _legacy_main(argv: Sequence[str]) -> int:
             return 0
     planner = None
     if args.fixture:
-        vision = FixtureVision(json.loads(args.fixture.read_text(encoding="utf-8-sig")))
+        vision_class = TargetFixtureVision if args.workflow_version == 2 else FixtureVision
+        vision = vision_class(json.loads(args.fixture.read_text(encoding="utf-8-sig")))
     else:
         transport = HttpChat(args.base_url, api_key_env=args.api_key_env, timeout=args.timeout)
-        vision = HttpVision(transport, model=args.model, structured=args.structured)
+        vision_class = TargetHttpVision if args.workflow_version == 2 else HttpVision
+        vision = vision_class(transport, model=args.model, structured=args.structured)
         if args.planner_model:
             planner = JsonPlanner(ChatPlanner(transport, model=args.planner_model, structured=args.structured))
     store = Store(args.run_dir)
@@ -261,24 +287,29 @@ def _legacy_main(argv: Sequence[str]) -> int:
             raise ValueError("run has no labeling profile; import it explicitly before registry resume")
         else:
             store.atomic_json("label_profile.json", {"profile": profile, "model": args.model,
-                             "threshold": args.threshold, "max_targets": args.max_targets})
-    engine = Engine(store, vision, planner, threshold=args.threshold, max_targets=args.max_targets)
+                             "threshold": args.threshold, "max_targets": args.max_targets,
+                             "workflow_version": args.workflow_version})
+    engine = (TargetEngine(store, vision, threshold=args.threshold, max_targets=args.max_targets)
+              if args.workflow_version == 2 else
+              Engine(store, vision, planner, threshold=args.threshold, max_targets=args.max_targets))
     if not args.resume_existing:
         for spec in specs:
             engine.add(spec)
             if registry:
                 registry.record(store.get(spec.task_id), store.root, profile)
-    counts = {"done": 0, "needs_review": 0, "run_dir": str(store.root),
+    counts = {"done": 0, "needs_review": 0, "partial_review": 0, "run_dir": str(store.root),
               "new": len(specs), "reused": reused, "review": review}
     for spec in specs:
         state = store.get(spec.task_id)
         terminal_outputs_exist = (
             (state.phase != "done" or (store.root / "results" / f"{spec.task_id}.json").is_file())
+            and (state.policy.version != 2 or not state.targets or state.phase == 'done' or
+                 (store.root / 'partial_results' / f'{spec.task_id}.json').is_file())
             and (store.root / "needs_review.json").is_file()
             and (store.root / "audit.json").is_file()
             and (registry is None or registry.run_result_valid(state, store.root))
         )
-        if state.phase in {"done", "needs_review"} and terminal_outputs_exist:
+        if state.phase in {"done", "needs_review", "partial_review"} and terminal_outputs_exist:
             if registry:
                 registry.record(state, store.root, profile)
             counts[state.phase] += 1

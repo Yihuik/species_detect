@@ -83,3 +83,13 @@ python -m agentized_workflow.cli --input-dir D:/path/to/images --metadata-csv D:
 `label_registry.py`：将机器结果与人工审核分开记录，按完整图片哈希、可信物种和流程版本跨运行复用；提供人工修正的不可变结果和审核历史。工作人员的命令见运行手册。
 
 此处的白名单是 Python 调用边界，规划 LLM 没有通用工具调用能力。数据库写入只由状态机控制；人工修改数据库、替换代码或自定义不守约的 provider 不属于这一边界可防御的行为。
+
+
+Version 2 labeling (default in `tools/start_agent.ps1`) adds `mixed` visibility,
+strict IoU > 0.75 per target, and one contextual crop review for each reliably
+associated unresolved target. Accepted targets stay frozen. Incomplete photos
+remain in `partial_results/` and `partial_annotated/`, outside complete training
+outputs. Historical version 1 runs retain their original policy; the low-level
+Python CLI defaults to version 1 for compatibility, so pass
+`--workflow-version 2` for new behavior. See `docs/RUNBOOK.md` for the explicit
+profile-change guard, partial review, and correction commands.

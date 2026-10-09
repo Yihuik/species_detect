@@ -4,7 +4,7 @@ param(
     [string]$RunDir,
     [string]$ProjectRoot = "",
     [string]$Model = "qwen3-vl-plus",
-    [double]$Threshold = 0.7
+    [Nullable[double]]$Threshold = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +55,8 @@ try {
 catch [System.IO.IOException] {
     throw "another labeling launcher is already running; check its process before retrying"
 }
+$policyArgs = @()
+if ($PSBoundParameters.ContainsKey("Threshold")) { $policyArgs += @("--threshold", [string]$Threshold) }
 Push-Location $root
 try {
     python -m agentized_workflow.cli `
@@ -62,7 +64,7 @@ try {
         --live `
         --model $Model `
         --base-url $env:DASHSCOPE_BASE_URL `
-        --threshold $Threshold `
+        @policyArgs `
         --label-registry (Join-Path $root "photos") `
         --run-dir $run
     if ($LASTEXITCODE -ne 0) { throw "Resumed automatic labeling failed with exit code $LASTEXITCODE" }

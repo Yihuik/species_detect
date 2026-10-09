@@ -1,6 +1,6 @@
 # Photo-labeling runbook
 
-## 日常启动与人工复核（2026-09-30 起）
+## 日常启动与人工复核（2026-10-09 更新）
 
 本节是工作人员使用的当前流程。下文以
 `D:\codex\new-agent` 为项目目录；所有照片、数据库、标注结果和
@@ -21,6 +21,75 @@ Test-Path .\.env
 `input/inbox/<批次>/<物种名>/`，也可放同结构的 ZIP 包；
 目录名必须与可信物种名一致。启动时先同步物种、采集公开照片并导入
 用户照片，只有已去重进入 `photos/` 的活动照片会参与打标。
+
+### 新流程：mixed 与逐目标局部复核
+
+一键启动现在默认使用 **版本 2、严格 IoU > 0.75**。版本 1 的历史运行
+保留原来的两类可见性、默认 IoU ≥ 0.7 和全图第三次定位规则。
+版本 2 不使用异常规划大模型，不改写可信物种名称。
+
+可见性分类针对指定物种：所有可确认个体均完整或大部分可见为
+`whole_or_mostly_visible`；均局部可见为 `partially_visible`；两类个体
+同时存在为 `mixed`。三类定位都要求检查完整及局部个体，不能只框主要
+个体。无法确认目标存在时仍可能分到 `partially_visible`，但空框不会
+自动通过；当前仍未增加独立的物种正确性核验。
+
+版本 2 先做两次独立的全图定位，再逐目标处理：
+
+- 对应关系明确且 IoU **严格大于**阈值的框立即保留。
+- 对应关系明确但未通过的目标，各做至多一次带上下文局部复核。
+- 局部范围为前两次框的并集，横纵各增加 25% 上下文并裁到原图范围。
+  请求只发送未画框的局部照片及物种，不提供旧框或旧 IoU；返回框映射回
+  原图后与该目标前两次结果比较。至少一组 IoU > 阈值且身份唯一才通过。
+- 多目标重叠造成对应歧义、找不到对应框、额外不明框、空框、调用失败
+  均留待人工复核。对应关系的保守候选阈值 0.25 只用于关联，不能代替
+  0.75 的通过阈值。
+- 已通过的目标不再重标。一次中断的局部请求不自动重发；保留已通过框。
+- 每张照片仍有目标数量预算，默认 10。任一次全图结果达到预算上限时，
+  不能证明标注完整，必须复核；这与照片库的照片数量不设上限无关。
+
+例如前两次对应 IoU 为 0.91、0.82、0.74，前两个框保留，第三个目标
+单独复核。全部目标解决后才进入 `done`；部分解决记为 `partial_review`。
+每个目标的候选框、状态、匹配 IoU、裁图范围和局部调用记录保存在
+`state.sqlite3` 的任务状态中。
+
+完整输出仍在 `results/` 与 `annotated/`。部分结果在
+`partial_results/` 与 `partial_annotated/`，只供复核，不按完整训练样本
+使用；`needs_review.json` 同时包括完全未通过和部分通过的任务。
+跨运行数据库将 `partial_review` 纳入机器待复核，不自动复用或自动重试。
+画框命令会同时补齐两类图片，并保持目录分开。
+
+升级前先只读预览新流程的任务数（不请求模型、不采集照片）：
+
+```powershell
+Set-Location 'D:\codex\new-agent'
+python -m agentized_workflow.cli photos labels plan `
+  --photos-root .\photos --metadata-csv .\photos\workflow_metadata.csv `
+  --env-file .\.env --workflow-version 2 --threshold 0.75
+```
+
+已有版本 1 结果不会被当作版本 2 结果复用。默认启动遇到已完成照片的
+流程变化会报错；确认愿意重新标注后才显式启动：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 `
+  -Contact '工作人员或项目联系邮箱' -WorkflowVersion 2 -AllowNewProfile
+```
+
+该命令包含采集和用户照片导入。若要继续旧流程并复用旧结果，使用
+`-WorkflowVersion 1`，未指定阈值时采用旧默认 0.7。
+`resume_agent.ps1` 默认从 SQLite 读取原版本及阈值，不会把旧运行切到新规则。
+底层 Python 标注命令及 `photos labels plan` 为兼容旧调用默认版本 1；
+直接运行版本 2 必须传 `--workflow-version 2`。
+
+人工处理部分结果时，先查看该 JSON 中的 `targets` 和已通过的
+`detections`，核对整张照片。现有 `photos labels correct` 命令接受
+**最终完整框列表**：将保留的已通过框及人工修正后的其他框一并填写到
+`boxes`，使用原图像素坐标。它会生成新的人工认可结果，旧部分结果和
+调用历史保留。此命令不是“只填一个待修正框”的接口，也不是逐目标
+再次模型请求；仅未完成照片不能直接执行 `review --decision approve`。
+若需要重新启动模型处理，仍须明确创建新流程/新运行，不会因每天启动
+自动重复局部请求。
 
 ### 首次迁入已有标注
 
@@ -130,7 +199,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 `
 python -m agentized_workflow.cli photos labels plan `
   --photos-root .\photos `
   --metadata-csv .\photos\workflow_metadata.csv `
-  --env-file .\.env
+  --env-file .\.env --workflow-version 2
 ```
 
 核对 `pending`、`reused`、`review`、`profile_changed` 和
@@ -144,8 +213,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 `
 ```
 
 当前版本对新阈值建立新结果，不会自动从旧定位尝试离线重算 IoU；
-这会触发相应模型调用，运行前应先检查 `photos labels plan` 的数量。
-日常运行保持默认 0.7，避免意外切换。
+版本 2 对每个框按新阈值复核；这会触发相应模型调用，运行前应先检查 `photos labels plan` 的数量。
+新流程日常运行保持默认 0.75；旧流程使用 `-WorkflowVersion 1` 和原阈值。
 
 ### 完成检查
 

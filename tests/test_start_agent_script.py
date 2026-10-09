@@ -180,7 +180,7 @@ def test_start_agent_skips_a_valid_existing_label_without_new_run(tmp_path: Path
         "    $global:LASTEXITCODE = $LASTEXITCODE\n"
         "}\n"
         f"& '{str(tmp_path / 'tools' / 'start_agent.ps1').replace("'", "''")}' "
-        f"-ProjectRoot '{str(tmp_path).replace("'", "''")}' -Contact 'test@example.org'\n",
+        f"-ProjectRoot '{str(tmp_path).replace("'", "''")}' -Contact 'test@example.org' -WorkflowVersion 1\n",
         encoding="utf-8",
     )
     result = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(harness)],
@@ -190,6 +190,14 @@ def test_start_agent_skips_a_valid_existing_label_without_new_run(tmp_path: Path
     assert not list((tmp_path / "runs").glob("agent-*"))
     assert (store.root / "annotated" / f"{spec.task_id}.jpg").is_file()
 
+
+    # Selecting the new default against a version 1 result must stop before a live call.
+    harness.write_text(harness.read_text(encoding='utf-8').replace('-WorkflowVersion 1', '-WorkflowVersion 2'), encoding='utf-8')
+    changed = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness)],
+                             cwd=tmp_path, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    assert changed.returncode != 0
+    assert 'profile changed' in changed.stdout + changed.stderr
+    assert not (tmp_path / 'label-called.txt').exists()
 
 def test_import_labels_script_uses_configured_endpoint_without_model_calls(tmp_path: Path) -> None:
     from agentized_workflow.label_registry import LabelRegistry, profile_for
@@ -304,3 +312,10 @@ def test_launchers_read_env_with_explicit_utf8():
     for name in ("start_agent.ps1", "resume_agent.ps1", "import_labels.ps1"):
         script = (root / "tools" / name).read_text(encoding="utf-8")
         assert "Get-Content -LiteralPath $envFile -Encoding UTF8" in script
+
+
+def test_start_defaults_to_v2_and_passes_version_to_plan_and_label():
+    script = (Path(__file__).resolve().parents[1] / 'tools' / 'start_agent.ps1').read_text(encoding='utf-8')
+    assert '[int]$WorkflowVersion = 2' in script
+    assert '[double]$Threshold = 0.75' in script
+    assert script.count('"--workflow-version", [string]$WorkflowVersion') == 2

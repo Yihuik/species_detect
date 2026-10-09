@@ -22,7 +22,7 @@ PROFILE_SCHEMA = 1
 
 
 def profile_for(model: str, base_url: str | None, threshold: float, max_targets: int,
-                structured: bool, planner_model: str | None) -> str:
+                structured: bool, planner_model: str | None, *, version: int = 1) -> str:
     """Fingerprint model requests and decisions without recording a credential."""
     root = Path(__file__).resolve().parent
     payload = {
@@ -33,6 +33,14 @@ def profile_for(model: str, base_url: str | None, threshold: float, max_targets:
         "implementation": {name: digest(root / name) for name in
                            ("providers.py", "workflow.py", "tools.py")},
     }
+    if version == 2:
+        from .models import Policy
+        Policy(threshold=threshold, max_targets=max_targets, version=2)
+        payload['workflow'] = 'agentized_metadata_v2'
+        payload['implementation'].update({name: digest(root / name) for name in (
+            'models.py', 'target_workflow.py', 'target_matching.py', 'target_providers.py', 'target_results.py')})
+    elif version != 1:
+        raise ValueError('unknown workflow version')
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -110,7 +118,7 @@ class LabelRegistry:
             if expected_sha and digest(path) != expected_sha:
                 return False
             data = json.loads(path.read_text(encoding="utf-8"))
-            return (data.get("workflow") == WORKFLOW_ID
+            return (data.get("workflow") in {WORKFLOW_ID, 'agentized_metadata_v2'}
                     and data.get("source_image") == spec.source_image
                     and data.get("metadata", {}).get("species") == spec.species
                     and data.get("image_width") == spec.width
@@ -121,6 +129,13 @@ class LabelRegistry:
 
     @classmethod
     def _result_matches_state(cls, path: Path, state: TaskState) -> bool:
+        if state.policy.version == 2:
+            from .target_results import result_payload
+            try:
+                return (state.phase in {'done', 'partial_review', 'needs_review'} and bool(state.targets)
+                        and json.loads(path.read_text(encoding='utf-8')) == result_payload(state))
+            except (OSError, ValueError, TypeError):
+                return False
         if state.phase != "done" or state.selected_attempt is None or not cls._result_valid(path, state.spec):
             return False
         try:
@@ -145,14 +160,16 @@ class LabelRegistry:
             raise ValueError("run task does not match an active photo-library asset")
         root = Path(run_dir).resolve(strict=True)
         result = root / "results" / f"{spec.task_id}.json"
+        if state.policy.version == 2 and state.phase != 'done' and state.targets:
+            result = root / 'partial_results' / f'{spec.task_id}.json'
         result_path = None
         result_sha = None
-        if state.phase == "done":
+        if state.phase == "done" or (state.policy.version == 2 and state.phase in {'needs_review', 'partial_review'} and state.targets):
             if not self._result_matches_state(result, state):
                 raise ValueError(f"completed task has no valid result: {spec.task_id}")
             result_path = str(result)
             result_sha = digest(result)
-        machine_status = state.phase if state.phase in {"done", "needs_review"} else "in_progress"
+        machine_status = 'needs_review' if state.phase == 'partial_review' else state.phase if state.phase in {"done", "needs_review"} else "in_progress"
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             db.execute(
@@ -199,6 +216,8 @@ class LabelRegistry:
         return Lookup("reuse", "approved" if decision == "approve" else "unreviewed", int(row["id"]))
 
     def run_result_valid(self, state: TaskState, run_dir: Path) -> bool:
+        if state.policy.version == 2 and state.targets and state.phase in {'needs_review', 'partial_review'}:
+            return self._result_matches_state(Path(run_dir) / 'partial_results' / f'{state.spec.task_id}.json', state)
         if state.phase != "done":
             return True
         return self._result_matches_state(Path(run_dir) / "results" /
@@ -230,7 +249,7 @@ class LabelRegistry:
         return [dict(row) for row in rows]
 
     def import_run(self, run_dir: Path, profile: str, *, threshold: float,
-                   max_targets: int, model: str) -> dict[str, int]:
+                   max_targets: int, model: str, version: int = 1) -> dict[str, int]:
         """Adopt a historical run only after an operator declares its model profile."""
         root = Path(run_dir).resolve(strict=True)
         if not (root / "state.sqlite3").is_file():
@@ -246,7 +265,7 @@ class LabelRegistry:
         states = store.all_states()
         if not states:
             raise ValueError("run has no tasks")
-        if any(state.policy.threshold != threshold or state.policy.max_targets != max_targets
+        if any(state.policy.version != version or state.policy.threshold != threshold or state.policy.max_targets != max_targets
                for state in states):
             raise ValueError("historical run policy does not match declared threshold/max-targets")
         counts = {"done": 0, "needs_review": 0, "in_progress": 0, "invalid": 0}
@@ -256,12 +275,12 @@ class LabelRegistry:
             except (OSError, ValueError, KeyError):
                 counts["invalid"] += 1
             else:
-                status = state.phase if state.phase in {"done", "needs_review"} else "in_progress"
+                status = 'needs_review' if state.phase == 'partial_review' else state.phase if state.phase in {"done", "needs_review"} else "in_progress"
                 counts[status] += 1
         if not profile_path.is_file() and counts["invalid"] == 0:
             store.atomic_json("label_profile.json", {
                 "profile": profile, "model": model, "threshold": threshold,
-                "max_targets": max_targets, "historical_import": True,
+                "max_targets": max_targets, "workflow_version": version, "historical_import": True,
             })
         return counts
 
@@ -346,7 +365,8 @@ class LabelRegistry:
         for case in self.list_cases():
             if case["asset_status"] != "active":
                 continue
-            if ((case["machine_status"] != "done" and case["result_kind"] != "human_correction") or
+            partial = bool(case['result_path'] and Path(case['result_path']).parent.name == 'partial_results')
+            if ((case["machine_status"] != "done" and case["result_kind"] != "human_correction" and not partial) or
                     case["review_status"] in {"rejected", "corrupt_result"}):
                 continue
             result = Path(case["result_path"]) if case["result_path"] else None
@@ -355,7 +375,7 @@ class LabelRegistry:
                 if (result is None or digest(result) != case["result_sha256"] or
                         digest(source) != case["image_sha256"]):
                     raise ValueError("result or source image changed")
-                target = Path(case["run_dir"]) / "annotated" / f"{result.stem}.jpg"
+                target = Path(case["run_dir"]) / ('partial_annotated' if partial else 'annotated') / f"{result.stem}.jpg"
                 if target.is_file() and target.stat().st_mtime_ns >= result.stat().st_mtime_ns:
                     counts["skipped"] += 1
                     continue
@@ -375,14 +395,15 @@ class LabelRegistry:
                                 (source["asset_id"], source["workflow_profile"])).fetchone()[0]
         if latest != case_id:
             raise ValueError("result was superseded by a newer label")
-        if source["machine_status"] != "done" and source["result_kind"] != "human_correction":
+        partial = bool(source['result_path'] and Path(source['result_path']).parent.name == 'partial_results')
+        if source["machine_status"] != "done" and source["result_kind"] != "human_correction" and not partial:
             raise ValueError("only completed results can be corrected")
         from .storage import Store
         from .render_labels import _render_one
 
         ancestor = source
         for _ in range(100):
-            if ancestor["result_kind"] == "model" and ancestor["machine_status"] == "done":
+            if ancestor["result_kind"] == "model" and ancestor["result_path"]:
                 break
             parent_path = Path(ancestor["result_path"])
             if not parent_path.is_file() or digest(parent_path) != ancestor["result_sha256"]:
@@ -392,9 +413,11 @@ class LabelRegistry:
         else:
             raise ValueError("correction history exceeds limit")
         state = Store(Path(ancestor["run_dir"])).get(ancestor["task_id"])
-        if state.phase != "done":
+        if state.phase != "done" and not (state.policy.version == 2 and state.targets and state.phase in {'partial_review', 'needs_review'}):
             raise ValueError("original run is no longer done")
         spec = state.spec
+        if self._asset(spec) is None or digest(Path(spec.image_path)) != spec.image_sha256:
+            raise ValueError('source image is missing, changed, or inactive')
         result_path = Path(source["result_path"])
         if not self._result_valid(result_path, spec, source["result_sha256"]):
             raise ValueError("source result is missing or changed")
@@ -414,6 +437,10 @@ class LabelRegistry:
                           for value, dimension in zip(box, (spec.width, spec.height, spec.width, spec.height))]
             detections.append({"species": spec.species, "bbox": normalized, "bbox_pixel": box})
         data["detections"] = detections
+        if state.policy.version == 2:
+            data['complete'] = True
+            if 'targets' in data:
+                data['source_targets'] = data.pop('targets')
         data["human_correction"] = {"source_case_id": case_id, "reviewer": reviewer.strip(),
                                     "reason": reason.strip()}
         manual_root = self.photos_root.parent / "runs" / "manual-corrections"

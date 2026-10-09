@@ -1,9 +1,9 @@
 from __future__ import annotations
 import math
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-Route = Literal['whole_or_mostly_visible', 'partially_visible']
+Route = Literal['whole_or_mostly_visible', 'partially_visible', 'mixed']
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, allow_inf_nan=False)
@@ -55,7 +55,38 @@ class Decision(Contract):
 class Policy(Contract):
     threshold: float = Field(default=.7, gt=0, le=1)
     max_targets: int = Field(default=10, ge=1, le=100)
-    version: Literal[1] = 1
+    version: Literal[1, 2] = 1
+
+    @model_validator(mode='after')
+    def validate_version_policy(self):
+        if self.version == 2 and not .75 <= self.threshold < 1:
+            raise ValueError('version 2 threshold must be at least 0.75 and below 1')
+        return self
+
+class TargetReviewRequest(Contract):
+    task: TaskSpec
+    request_id: str
+    target_id: str
+    region: tuple[int, int, int, int]
+    max_targets: int = Field(ge=1, le=100)
+
+class TargetReview(Contract):
+    request_id: str
+    region: tuple[int, int, int, int]
+    result: Localization | None = None  # mapped back to original normalized coordinates
+    error: str | None = None
+
+class TargetRecord(Contract):
+    target_id: str
+    first_box: Box | None = None
+    second_box: Box | None = None
+    status: Literal['accepted', 'pending', 'needs_review']
+    selected_box: Box | None = None
+    pair_iou: float | None = None
+    accepted_iou: float | None = None
+    accepted_pair: Literal['first_second', 'first_review', 'second_review'] | None = None
+    review: TargetReview | None = None
+    reason: str | None = None
 
 class Attempt(Contract):
     number: int = Field(ge=1, le=3)
@@ -66,10 +97,11 @@ class Attempt(Contract):
 class TaskState(Contract):
     spec: TaskSpec
     policy: Policy
-    phase: Literal['visibility','locate','compare','plan','done','needs_review'] = 'visibility'
+    phase: Literal['visibility','locate','compare','plan','target_review','done','needs_review','partial_review'] = 'visibility'
     route: Route | None = None
     attempts: tuple[Attempt, ...] = Field(default=(), max_length=3)
     in_flight: str | None = None
     planner_calls: int = Field(default=0, ge=0, le=1)
     selected_attempt: int | None = None
     reason: str | None = None
+    targets: tuple[TargetRecord, ...] = ()

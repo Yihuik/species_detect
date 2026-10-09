@@ -73,8 +73,10 @@ def render_completed(photos_root: Path, run_dir: Path) -> dict[str, int]:
     photos_root = Path(photos_root).resolve(strict=True)
     run_dir = Path(run_dir).resolve(strict=True)
     counts = {"rendered": 0, "skipped": 0, "failed": 0}
-    for result_path in sorted((run_dir / "results").glob("*.json")):
-        output_path = run_dir / "annotated" / f"{result_path.stem}.jpg"
+    result_paths = list((run_dir / 'results').glob('*.json')) + list((run_dir / 'partial_results').glob('*.json'))
+    for result_path in sorted(result_paths):
+        partial = result_path.parent.name == 'partial_results'
+        output_path = run_dir / ('partial_annotated' if partial else 'annotated') / f"{result_path.stem}.jpg"
         if output_path.is_file() and output_path.stat().st_mtime_ns >= result_path.stat().st_mtime_ns:
             counts["skipped"] += 1
             continue

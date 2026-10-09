@@ -91,7 +91,7 @@ class Store:
     def review_queue(self) -> list[dict]:
         with self.connection() as db:
             states = [TaskState.model_validate_json(r[0]) for r in db.execute('SELECT state FROM tasks ORDER BY id')]
-        return [s.model_dump(mode='json') for s in states if s.phase=='needs_review']
+        return [s.model_dump(mode='json') for s in states if s.phase in {'needs_review', 'partial_review'}]
 
     def atomic_json(self, relative: str, value):
         path = (self.root/relative).resolve()
@@ -108,7 +108,11 @@ class Store:
             if os.path.exists(name): os.unlink(name)
 
     def export(self, state: TaskState):
-        if state.phase=='done':
+        if state.policy.version == 2 and state.targets:
+            from .target_results import result_payload
+            directory = 'results' if state.phase == 'done' else 'partial_results'
+            self.atomic_json(directory+'/'+state.spec.task_id+'.json', result_payload(state))
+        elif state.phase=='done':
             attempt = state.attempts[state.selected_attempt-1]
             self.atomic_json('results/'+state.spec.task_id+'.json', {
                 'workflow':'agentized_metadata_v1', 'source_image':state.spec.source_image,

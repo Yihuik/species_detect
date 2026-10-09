@@ -4,13 +4,18 @@ param(
     [string]$Contact,
     [string]$ProjectRoot = "",
     [string]$Model = "qwen3-vl-plus",
-    [double]$Threshold = 0.7,
+    [double]$Threshold = 0.75,
+    [ValidateSet(1, 2)]
+    [int]$WorkflowVersion = 2,
     [switch]$RetryRejected,
     [int]$RetryCaseId = 0,
     [switch]$AllowNewProfile
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $PSBoundParameters.ContainsKey("Threshold") -and $WorkflowVersion -eq 1) {
+    $Threshold = 0.7
+}
 if (-not $ProjectRoot) {
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
 }
@@ -72,7 +77,8 @@ try {
         "--photos-root", (Join-Path $root "photos"),
         "--metadata-csv", (Join-Path $root "photos/workflow_metadata.csv"),
         "--model", $Model, "--base-url", $env:DASHSCOPE_BASE_URL,
-        "--threshold", [string]$Threshold
+        "--threshold", [string]$Threshold,
+        "--workflow-version", [string]$WorkflowVersion
     )
     if ($RetryRejected) { $planArgs += "--retry-rejected" }
     if ($RetryCaseId -gt 0) { $planArgs += @("--retry-case-id", [string]$RetryCaseId) }
@@ -120,6 +126,7 @@ try {
         "--live", "--model", $Model,
         "--base-url", $env:DASHSCOPE_BASE_URL,
         "--threshold", [string]$Threshold,
+        "--workflow-version", [string]$WorkflowVersion,
         "--label-registry", (Join-Path $root "photos"),
         "--run-dir", $runDir
     )
