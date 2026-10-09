@@ -72,3 +72,16 @@ terminal session disappeared during the 2026-09-24 run; its lifetime is not a
 reliable ownership mechanism here. Python's
 [logging guide](https://docs.python.org/3/howto/logging.html) is the reference
 for structured application logs; redact secrets before emitting them.
+
+
+## GitHub archive connectivity
+
+If direct GitHub pushes fail with connection reset while Python can reach
+GitHub, check the existing Windows system proxy before repeating direct pushes.
+Git may have no `http.proxy` and no proxy environment variables while Python
+uses the Windows proxy. On 2026-10-09 the existing proxy was 127.0.0.1:7890;
+`git -c http.proxy=http://127.0.0.1:7890 push origin codex/phase-0-baseline`
+succeeded. Apply the currently verified proxy to one command only; do not
+persist this machine-specific address in Git configuration or print proxy
+credentials. Verify remote HEAD after pushing. Preserve the code-only staging
+boundary: never include photos, runtime outputs, SQLite, or .env.

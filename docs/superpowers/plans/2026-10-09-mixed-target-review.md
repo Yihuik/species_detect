@@ -29,7 +29,7 @@
 - [x] Wire version selection into CLI and launchers. Default new work to version 2; infer original policy on resume; retain version 1 profile fingerprints and historical importing.
 - [x] Update operations manual with plan/launch/version instructions, partial output paths, and the full-box manual correction boundary.
 - [x] Run `python -m pytest -q --basetemp .pytest_tmp`, inspect diff/staged paths, and commit code only.
-- [ ] Archive to the authorized remote when connectivity returns. Both normal and single-command HTTP/1.1 pushes failed with connection reset; code commit a269f23 remains safely local.
+- [x] Archive to the authorized remote. Commits a269f23 and 6901559 were pushed after using the existing Windows system proxy for the Git command. Direct Git connections reset because Git did not use that proxy.
 
 
 ## Verification evidence
