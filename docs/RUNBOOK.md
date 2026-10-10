@@ -1,6 +1,6 @@
 # Photo-labeling runbook
 
-## 日常启动与人工复核（2026-10-09 更新）
+## 日常启动与人工复核（2026-10-10 更新）
 
 本节是工作人员使用的当前流程。下文以
 `D:\codex\new-agent` 为项目目录；所有照片、数据库、标注结果和
@@ -91,6 +91,64 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 `
 再次模型请求；仅未完成照片不能直接执行 `review --decision approve`。
 若需要重新启动模型处理，仍须明确创建新流程/新运行，不会因每天启动
 自动重复局部请求。
+
+### 按物种和可见性查找画框照片
+
+画框照片按可信物种名称及 `visibility_route` 分类。这里的“完整/局部/
+混合”是照片目标的可见性分类，与两次定位或第三次复核的调用次数不同。
+各物种固定保留三个分类目录，没有照片的分类为空：
+
+```text
+runs/<运行目录>/
+├─ results/<任务ID>.json
+├─ annotated/
+│  ├─ index.csv
+│  └─ <物种名称>/
+│     ├─ 01_完整或大部分可见/<原照片名>__<任务ID>.jpg
+│     ├─ 02_局部可见/<原照片名>__<任务ID>.jpg
+│     └─ 03_混合可见/<原照片名>__<任务ID>.jpg
+├─ partial_results/<任务ID>.json
+└─ partial_annotated/<同样的物种与分类结构>
+```
+
+输出名去掉原照片扩展名，加入任务 ID，因此不同目录中同名的原照片也
+不会互相覆盖。可信名称中若包含 Windows 禁用字符或名称过长，则目录
+名作安全转换并带短哈希；索引保留完整原物种名。缺失或未知的可见性
+分类明确计为失败，不猜测类别。
+
+`annotated/index.csv` 可以用 Excel 打开，包含物种、可见性分类、原照片
+相对路径、任务 ID、画框照片路径及对应的规范 JSON 路径。索引路径
+相对于本次运行目录；部分结果的索引在 `partial_annotated/index.csv`。
+这些目录和索引用于查找照片，不能据此认定人工已认可；人工状态仍按
+`photos labels list` 和 `queue` 查看。人工修正的图片使用同样的分类结构，
+位于 `runs/manual-corrections/annotated/`。
+
+已有平铺画框图也使用原离线命令整理：
+
+```powershell
+Set-Location 'D:\codex\new-agent'
+$env:PYTHONPATH = (Join-Path (Get-Location) 'src')
+python -m agentized_workflow.render_labels `
+  --photos-root .\photos --run-dir .\runs\agent-20260922-142848
+```
+
+它按已有 JSON 移动当前画框图，不调用模型；缺失或过期的图片才在本地
+重新绘制。原照片、规范 JSON、SQLite 状态及人工审核记录不迁移。
+输出计数为 `rendered`（新绘制）、`moved`（已有图片整理）、`skipped`
+（当前位置已是当前图片）、`failed`。重复执行应只出现 `skipped`。
+若旧平铺图片与分类目录中已有图片内容不同，会明确失败并保留两者；
+不能通过删除 JSON 或改 SQLite 绕过冲突。完全一致的派生副本可合并。
+
+数量检查必须递归进入分类目录：
+
+```powershell
+(Get-ChildItem -LiteralPath .\runs\agent-20260922-142848\annotated `
+  -Recurse -File -Filter '*.jpg').Count
+```
+
+这是展示目录变更，模型请求和结果判定的流程指纹保持不变，不会因此
+触发旧照片重标。历史版本 1 没有 `mixed` 分类，其混合目录可为空；
+此整理不重新判断旧照片的可见性。
 
 ### 蟹类紧框与头胸甲不对称复核
 
@@ -186,7 +244,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 `
 相同照片、物种和流程版本已有有效结果时，直接跳过模型调用；没有
 新任务时不会创建时间戳运行目录。人工驳回的结果默认留在复核队列，
 不会在每次启动时自动重标。新完成的 JSON 会自动渲染为
-`runs/<运行目录>/annotated/<任务ID>.jpg`；被复用照片的原结果仍在
+`runs/<运行目录>/annotated/<物种>/<可见性分类>/<原照片名>__<任务ID>.jpg`；被复用照片的原结果仍在
 其原运行目录，可通过下方 `list` 查到路径。
 
 如果只是继续一个已知的运行，也可使用：
@@ -373,6 +431,6 @@ SQLite state. Collection and new remote downloads are outside this scope.
 
 The run is complete only when phase counts contain no runnable phase, the
 worker has ended, the results/audit outputs have timestamps at or after the
-last task-state update, and the number of `annotated/*.jpg` files equals the
+last task-state update, and the number of JPEG files recursively under `annotated/` equals the
 number of `done` tasks. `needs_review` is a scoped terminal for individual
 images and must retain its recorded reason.

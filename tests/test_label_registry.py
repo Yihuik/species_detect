@@ -147,8 +147,8 @@ def test_human_correction_keeps_original_and_approves_new_boxes(tmp_path: Path):
     assert corrected["result_kind"] == "human_correction"
     result = json.loads(Path(corrected["result_path"]).read_text(encoding="utf-8"))
     assert result["detections"][0]["bbox_pixel"] == [2, 3, 40, 30]
-    assert (Path(corrected["run_dir"]) / "annotated" /
-            f"{Path(corrected['result_path']).stem}.jpg").is_file()
+    assert (Path(corrected["run_dir"]) / "annotated" / "石磺" / "01_完整或大部分可见" /
+            f"{Path(spec.source_image).stem}__{Path(corrected['result_path']).stem}.jpg").is_file()
     assert (store.root / "results" / f"{spec.task_id}.json").is_file()
     assert old_id not in [item["id"] for item in registry.review_queue()]
     Path(corrected["result_path"]).write_text("{}", encoding="utf-8")
@@ -289,3 +289,37 @@ def test_removed_inactive_photo_does_not_block_rendering_current_library(tmp_pat
         db.execute("UPDATE assets SET status='inactive'")
     Path(spec.image_path).unlink()
     assert registry.render_missing()["failed"] == 0
+
+
+def test_registry_backfill_moves_legacy_image_and_preserves_reuse(tmp_path: Path):
+    from agentized_workflow.render_labels import _render_one
+    photos, _, spec, profile = prepared(tmp_path)
+    store, state = completed(tmp_path, spec)
+    registry = LabelRegistry(photos); registry.record(state, store.root, profile)
+    result = store.root / 'results' / f'{spec.task_id}.json'
+    flat = store.root / 'annotated' / f'{spec.task_id}.jpg'
+    _render_one(photos, result, flat)
+    before = flat.read_bytes()
+    report = registry.render_missing()
+    grouped = store.root / 'annotated' / '石磺' / '01_完整或大部分可见' / f'{Path(spec.source_image).stem}__{spec.task_id}.jpg'
+    assert grouped.is_file() and not flat.exists()
+    assert grouped.read_bytes() == before and report['moved'] == 1
+    assert (store.root / 'annotated' / 'index.csv').is_file()
+    assert registry.lookup(spec, profile).action == 'reuse'
+    assert registry.render_missing()['skipped'] == 1
+
+
+def test_manual_correction_and_backfill_share_grouped_layout(tmp_path: Path):
+    photos, _, spec, profile = prepared(tmp_path)
+    store, state = completed(tmp_path, spec)
+    registry = LabelRegistry(photos)
+    original = registry.record(state, store.root, profile)
+    case_id = registry.correct(original, [[2, 3, 40, 30]], 'reviewer', 'checked')
+    case = registry.case(case_id)
+    manual = Path(case['run_dir']); result_id = Path(case['result_path']).stem
+    grouped = manual / 'annotated' / '石磺' / '01_完整或大部分可见' / f'{Path(spec.source_image).stem}__{result_id}.jpg'
+    assert grouped.is_file() and (manual / 'annotated' / 'index.csv').is_file()
+    grouped.unlink()
+    assert registry.render_missing()['rendered'] == 1
+    assert grouped.is_file() and not (manual / 'annotated' / f'{result_id}.jpg').exists()
+    assert registry.lookup(spec, profile).review_status == 'approved'

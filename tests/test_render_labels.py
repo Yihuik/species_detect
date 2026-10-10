@@ -20,13 +20,14 @@ def test_render_completed_draws_box_and_skips_current_photo(tmp_path: Path) -> N
             "image_width": 100,
             "image_height": 80,
             "metadata": {"species": "甲蟹"},
+            "visibility_route": "whole_or_mostly_visible",
             "detections": [{"bbox_pixel": [10, 20, 60, 50], "species": "甲蟹"}],
         }, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    assert render_completed(photos, run) == {"rendered": 1, "skipped": 0, "failed": 0}
-    output = run / "annotated" / "task-one.jpg"
+    assert render_completed(photos, run) == {"rendered": 1, "moved": 0, "skipped": 0, "failed": 0}
+    output = run / "annotated" / "甲蟹" / "01_完整或大部分可见" / "source__task-one.jpg"
     with Image.open(output) as image:
         assert image.size == (100, 80)
         red = image.getpixel((10, 30))
@@ -35,7 +36,7 @@ def test_render_completed_draws_box_and_skips_current_photo(tmp_path: Path) -> N
     assert all(channel > 220 for channel in white)
     first_mtime = output.stat().st_mtime_ns
 
-    assert render_completed(photos, run) == {"rendered": 0, "skipped": 1, "failed": 0}
+    assert render_completed(photos, run) == {"rendered": 0, "moved": 0, "skipped": 1, "failed": 0}
     assert output.stat().st_mtime_ns == first_mtime
 
 
@@ -56,11 +57,12 @@ def test_render_completed_uses_model_exif_orientation(tmp_path: Path) -> None:
             "image_width": 100,
             "image_height": 80,
             "metadata": {"species": "Crab"},
+            "visibility_route": "whole_or_mostly_visible",
             "detections": [{"bbox_pixel": [10, 20, 60, 50], "species": "Crab"}],
         }),
         encoding="utf-8",
     )
 
     assert render_completed(photos, run)["rendered"] == 1
-    with Image.open(run / "annotated" / "task-rotated.jpg") as image:
+    with Image.open(run / "annotated" / "Crab" / "01_完整或大部分可见" / "rotated__task-rotated.jpg") as image:
         assert image.size == (100, 80)

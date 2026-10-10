@@ -188,7 +188,7 @@ def test_start_agent_skips_a_valid_existing_label_without_new_run(tmp_path: Path
     assert result.returncode == 0, result.stdout + result.stderr
     assert not (tmp_path / "label-called.txt").exists()
     assert not list((tmp_path / "runs").glob("agent-*"))
-    assert (store.root / "annotated" / f"{spec.task_id}.jpg").is_file()
+    assert (store.root / "annotated" / "石磺" / "01_完整或大部分可见" / f"{Path(spec.source_image).stem}__{spec.task_id}.jpg").is_file()
 
 
     # Selecting the new default against a version 1 result must stop before a live call.
@@ -243,7 +243,7 @@ def test_import_labels_script_uses_configured_endpoint_without_model_calls(tmp_p
     assert result.returncode == 0, result.stdout + result.stderr
     profile = profile_for("qwen3-vl-plus", "https://example.invalid/v1", .7, 10, False, None)
     assert LabelRegistry(photos).lookup(spec, profile).action == "reuse"
-    assert (store.root / "annotated" / f"{spec.task_id}.jpg").is_file()
+    assert (store.root / "annotated" / "石磺" / "01_完整或大部分可见" / f"{Path(spec.source_image).stem}__{spec.task_id}.jpg").is_file()
     assert list((tmp_path / "runs" / "backups").glob("photo_library-*.sqlite3"))
 
 

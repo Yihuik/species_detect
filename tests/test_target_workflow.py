@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import pytest
 from PIL import Image
 from agentized_workflow.metadata import load_tasks
@@ -171,7 +172,7 @@ def test_partial_render_and_registry_never_reuse_incomplete_photo(tmp_path):
     report = render_completed(photos, store.root)
     assert report['rendered'] == 1
     assert not (store.root / 'annotated').exists()
-    assert (store.root / 'partial_annotated' / f'{spec.task_id}.jpg').is_file()
+    assert (store.root / 'partial_annotated' / 'target' / '03_混合可见' / f'{Path(spec.source_image).stem}__{spec.task_id}.jpg').is_file()
     corrected = registry.correct(case_id, [A, C], 'reviewer', 'checked complete image')
     assert registry.lookup(spec, profile).action == 'reuse'
     assert registry.case(corrected)['result_kind'] == 'human_correction'

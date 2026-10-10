@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\start_agent.ps1 -Con
 导出文件可从数据库重复生成：
 
 - `results/<task_id>.json`：可信名称、选定框、像素坐标、来源哈希、策略和被选轮次。
-- `annotated/<task_id>.jpg`：由已完成的 JSON 和原图离线生成，显示框与可信物种名称；增量回填命令见运行手册。
+- `annotated/<物种>/<可见性分类>/<原照片名>__<task_id>.jpg`：由已完成的 JSON 和原图离线生成，显示框与可信物种名称；按完整或大部分可见、局部可见、混合可见分类，`annotated/index.csv` 提供原照片及 JSON 的对应关系；整理和增量回填命令见运行手册。
 - `needs_review.json`：该运行需要人工复核的任务（原因、来源、历次框或错误类型）。跨运行的人工认可、驳回和修正由标注索引记录；驳回不会在下次一键启动时自动重标。
 - `audit.json`：有序审计事件，包括调用意图、结果、决策、终止状态。数据库 events 表保留权威日志；JSON 是可重建快照。
 

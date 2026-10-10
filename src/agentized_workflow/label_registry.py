@@ -358,32 +358,32 @@ class LabelRegistry:
         return cases
 
     def render_missing(self) -> dict[str, int]:
-        """Regenerate current, accepted visual artifacts without a model call."""
-        from .render_labels import _render_one
+        """Regenerate or organize current visual artifacts without a model call."""
+        from .render_labels import render_result
+        from .output_layout import write_annotation_indexes
 
-        counts = {"rendered": 0, "skipped": 0, "failed": 0}
+        counts = {'rendered': 0, 'moved': 0, 'skipped': 0, 'failed': 0}
+        affected_runs = set()
         for case in self.list_cases():
-            if case["asset_status"] != "active":
+            if case['asset_status'] != 'active':
                 continue
             partial = bool(case['result_path'] and Path(case['result_path']).parent.name == 'partial_results')
-            if ((case["machine_status"] != "done" and case["result_kind"] != "human_correction" and not partial) or
-                    case["review_status"] in {"rejected", "corrupt_result"}):
+            if ((case['machine_status'] != 'done' and case['result_kind'] != 'human_correction' and not partial) or
+                    case['review_status'] in {'rejected', 'corrupt_result'}):
                 continue
-            result = Path(case["result_path"]) if case["result_path"] else None
-            source = self.photos_root / case["local_path"]
+            result = Path(case['result_path']) if case['result_path'] else None
+            source = self.photos_root / case['local_path']
             try:
-                if (result is None or digest(result) != case["result_sha256"] or
-                        digest(source) != case["image_sha256"]):
-                    raise ValueError("result or source image changed")
-                target = Path(case["run_dir"]) / ('partial_annotated' if partial else 'annotated') / f"{result.stem}.jpg"
-                if target.is_file() and target.stat().st_mtime_ns >= result.stat().st_mtime_ns:
-                    counts["skipped"] += 1
-                    continue
-                _render_one(self.photos_root, result, target)
-            except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-                counts["failed"] += 1
-            else:
-                counts["rendered"] += 1
+                if (result is None or digest(result) != case['result_sha256'] or
+                        digest(source) != case['image_sha256']):
+                    raise ValueError('result or source image changed')
+                root = Path(case['run_dir'])
+                counts[render_result(self.photos_root, result, root)] += 1
+                affected_runs.add(root)
+            except (OSError, ValueError, KeyError, TypeError):
+                counts['failed'] += 1
+        for root in sorted(affected_runs):
+            write_annotation_indexes(root)
         return counts
 
     def correct(self, case_id: int, boxes: list[list[float]], reviewer: str, reason: str) -> int:
@@ -399,7 +399,8 @@ class LabelRegistry:
         if source["machine_status"] != "done" and source["result_kind"] != "human_correction" and not partial:
             raise ValueError("only completed results can be corrected")
         from .storage import Store
-        from .render_labels import _render_one
+        from .render_labels import render_result
+        from .output_layout import write_annotation_indexes
 
         ancestor = source
         for _ in range(100):
@@ -448,8 +449,8 @@ class LabelRegistry:
         manual_id = uuid4().hex
         manual_store.atomic_json(f"results/{manual_id}.json", data)
         corrected_path = manual_root / "results" / f"{manual_id}.json"
-        rendered_path = manual_root / "annotated" / f"{manual_id}.jpg"
-        _render_one(self.photos_root, corrected_path, rendered_path)
+        render_result(self.photos_root, corrected_path, manual_root)
+        write_annotation_indexes(manual_root)
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")

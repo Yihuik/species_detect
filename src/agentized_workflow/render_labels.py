@@ -10,7 +10,8 @@ import tempfile
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from .metadata import safe_relative
+from .metadata import digest, safe_relative
+from .output_layout import annotation_path, ensure_group_directories, write_annotation_indexes
 
 
 def _label_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -69,29 +70,48 @@ def _render_one(photos_root: Path, result_path: Path, output_path: Path) -> None
             os.unlink(temporary)
 
 
+def render_result(photos_root: Path, result_path: Path, run_dir: Path) -> str:
+    """Move a legacy image losslessly, or paint a missing/stale grouped output."""
+    run = Path(run_dir).resolve(strict=True)
+    result = Path(result_path).resolve(strict=True)
+    output = annotation_path(run, result)
+    root = output.parent.parent.parent
+    legacy = (root / f'{result.stem}.jpg').resolve()
+    if not legacy.is_relative_to(root):
+        raise ValueError('legacy annotation escapes output directory')
+    ensure_group_directories(output)
+    moved = False
+    if legacy.is_file():
+        if output.is_file():
+            if digest(legacy) != digest(output):
+                raise ValueError('conflicting flat and grouped annotations; preserve both for review')
+            legacy.unlink()  # Exact derived duplicate; the verified grouped file survives.
+        else:
+            legacy.rename(output)  # Both validated paths are under this run output root.
+        moved = True
+    if output.is_file() and output.stat().st_mtime_ns >= result.stat().st_mtime_ns:
+        return 'moved' if moved else 'skipped'
+    _render_one(Path(photos_root).resolve(strict=True), result, output)
+    return 'rendered'
+
+
 def render_completed(photos_root: Path, run_dir: Path) -> dict[str, int]:
     photos_root = Path(photos_root).resolve(strict=True)
     run_dir = Path(run_dir).resolve(strict=True)
-    counts = {"rendered": 0, "skipped": 0, "failed": 0}
+    counts = {'rendered': 0, 'moved': 0, 'skipped': 0, 'failed': 0}
     result_paths = list((run_dir / 'results').glob('*.json')) + list((run_dir / 'partial_results').glob('*.json'))
     for result_path in sorted(result_paths):
-        partial = result_path.parent.name == 'partial_results'
-        output_path = run_dir / ('partial_annotated' if partial else 'annotated') / f"{result_path.stem}.jpg"
-        if output_path.is_file() and output_path.stat().st_mtime_ns >= result_path.stat().st_mtime_ns:
-            counts["skipped"] += 1
-            continue
         try:
-            _render_one(photos_root, result_path, output_path)
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            counts["failed"] += 1
-            print(f"render failed for {result_path.name}: {type(exc).__name__}", file=sys.stderr)
-        else:
-            counts["rendered"] += 1
+            counts[render_result(photos_root, result_path, run_dir)] += 1
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            counts['failed'] += 1
+            print(f'render failed for {result_path.name}: {type(exc).__name__}', file=sys.stderr)
+    write_annotation_indexes(run_dir)
     return counts
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render completed bbox JSON as annotated local photos")
+    parser = argparse.ArgumentParser(description="Render or organize local annotations by species and visibility")
     parser.add_argument("--photos-root", type=Path, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args()
